@@ -11,7 +11,15 @@ export async function login(username, password) {
   params.append('username', username);
   params.append('password', password);
   const res = await api.post('/auth/token', params);
-  return res.data.access_token;
+  const token = res.data.access_token;
+  let role = 'user';
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    role = payload.role || 'user';
+  } catch (e) {
+    // fallback to user
+  }
+  return { token, role };
 }
 
 export async function fetchDevices(token) {

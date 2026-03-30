@@ -11,8 +11,10 @@ export default function App() {
   const [selected, setSelected] = useState(null);
   const [telemetry, setTelemetry] = useState([]);
   const [token, setToken] = useState('');
+  const [role, setRole] = useState('user');
   const [authError, setAuthError] = useState('');
   const [authForm, setAuthForm] = useState({ username: 'admin', password: 'admin123' });
+  const [view, setView] = useState('dashboard');
 
   const onlineCount = useMemo(() => devices.filter((d) => (d.status || '').toLowerCase() === 'online').length, [devices]);
 
@@ -57,11 +59,23 @@ export default function App() {
     e.preventDefault();
     setAuthError('');
     try {
-      const t = await login(authForm.username, authForm.password);
+      const { token: t, role: r } = await login(authForm.username, authForm.password);
       setToken(t);
+      setRole(r);
     } catch (err) {
       setAuthError(err?.response?.data?.detail || 'Login failed');
+      setRole('user');
     }
+  };
+
+  useEffect(() => {
+    const hash = window.location.hash.replace('#', '');
+    if (hash === 'admin') setView('admin');
+  }, []);
+
+  const switchView = (next) => {
+    setView(next);
+    window.location.hash = next === 'admin' ? 'admin' : '';
   };
 
   const handleSendCommand = async (cmd) => {
@@ -75,6 +89,11 @@ export default function App() {
         <div className="brand">
           <p className="eyebrow">Panel IoT</p>
           <h1>Monitoreo y Comandos</h1>
+          {token ? (
+            <p className="muted">Sesión: {role === 'admin' ? 'Administrador' : 'Usuario'}</p>
+          ) : (
+            <p className="muted">Ingresá para ver los dispositivos</p>
+          )}
         </div>
         <form className="auth-inline" onSubmit={handleLogin}>
           <div>
@@ -100,46 +119,73 @@ export default function App() {
         </form>
       </header>
 
-      <section className="intro">
-        <p className="muted">Supervisá tus dispositivos, envía comandos y lee telemetría en segundos.</p>
-      </section>
+      {!token && (
+        <section className="hero">
+          <div>
+            <p className="eyebrow">Plataforma IoT</p>
+            <h2>Todo tu parque en un solo lugar.</h2>
+            <p className="muted">Iniciá sesión para ver el tablero en vivo o administrar usuarios.</p>
+          </div>
+        </section>
+      )}
 
-      <section className="metrics">
-        <div className="metric-card">
-          <p className="eyebrow">En línea</p>
-          <h2>{onlineCount}</h2>
-          <p className="muted">Dispositivos reportando</p>
+      {token && (
+        <div className="nav-tabs">
+          <button className={`tab ${view === 'dashboard' ? 'active' : ''}`} onClick={() => switchView('dashboard')}>
+            Monitoreo
+          </button>
+          {role === 'admin' && (
+            <button className={`tab ${view === 'admin' ? 'active' : ''}`} onClick={() => switchView('admin')}>
+              Usuarios
+            </button>
+          )}
         </div>
-        <div className="metric-card">
-          <p className="eyebrow">Flota</p>
-          <h2>{devices.length}</h2>
-          <p className="muted">Total de dispositivos</p>
-        </div>
-        <div className="metric-card">
-          <p className="eyebrow">API</p>
-          <h2><StatusBadge status={token ? 'online' : 'offline'} /></h2>
-          <p className="muted">Estado del token</p>
-        </div>
-      </section>
+      )}
 
-      <section className="content">
-        <DeviceList
-          devices={devices}
-          onSelect={(d) => setSelected(d)}
-          selectedId={selected?.device_id}
-        />
-        <div className="detail-stack">
-          <DeviceDetail
-            device={selected}
-            telemetry={telemetry}
-            onSendCommand={handleSendCommand}
-            token={token}
-          />
-          <TerminalFeed device={selected} telemetry={telemetry} />
-        </div>
-      </section>
+      {token && view === 'dashboard' && (
+        <>
+          <section className="intro">
+            <p className="muted">Supervisá tus dispositivos, envía comandos y lee telemetría en segundos.</p>
+          </section>
 
-      <AdminPanel token={token} />
+          <section className="metrics">
+            <div className="metric-card">
+              <p className="eyebrow">En línea</p>
+              <h2>{onlineCount}</h2>
+              <p className="muted">Dispositivos reportando</p>
+            </div>
+            <div className="metric-card">
+              <p className="eyebrow">Flota</p>
+              <h2>{devices.length}</h2>
+              <p className="muted">Total de dispositivos</p>
+            </div>
+            <div className="metric-card">
+              <p className="eyebrow">API</p>
+              <h2><StatusBadge status={token ? 'online' : 'offline'} /></h2>
+              <p className="muted">Estado del token</p>
+            </div>
+          </section>
+
+          <section className="content">
+            <DeviceList
+              devices={devices}
+              onSelect={(d) => setSelected(d)}
+              selectedId={selected?.device_id}
+            />
+            <div className="detail-stack">
+              <DeviceDetail
+                device={selected}
+                telemetry={telemetry}
+                onSendCommand={handleSendCommand}
+                token={token}
+              />
+              <TerminalFeed device={selected} telemetry={telemetry} />
+            </div>
+          </section>
+        </>
+      )}
+
+      {token && view === 'admin' && role === 'admin' && <AdminPanel token={token} />}
     </div>
   );
 }

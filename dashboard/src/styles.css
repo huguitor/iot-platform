@@ -117,6 +117,39 @@ h2, h3, h4 {
   margin: 8px 0 14px;
 }
 
+.nav-tabs {
+  display: inline-flex;
+  gap: 8px;
+  margin: 12px 0;
+  background: #0c1526;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.tab {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: #e5e7eb;
+  padding: 10px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.tab.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.4);
+}
+
+.hero {
+  margin: 18px 0;
+  padding: 18px;
+  background: linear-gradient(120deg, rgba(14, 165, 233, 0.12), rgba(12, 21, 38, 0.9));
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
 .metric-card {
   background: var(--panel);
   border: 1px solid var(--border);
