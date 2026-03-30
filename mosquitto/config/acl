@@ -1,0 +1,7 @@
+# ACL for MQTT topics
+# Update username if you change MQTT_USERNAME in .env
+user iotuser
+topic readwrite iot/devices/#
+
+user phone
+topic readwrite iot/devices/#
