@@ -22,6 +22,7 @@ from .schemas import (
     Token,
     User as UserSchema,
     UserCreate,
+    UserWithPermissions,
 )
 
 app = FastAPI(title="IoT Platform API")
@@ -244,3 +245,12 @@ def upsert_permission(
     db.commit()
     db.refresh(permission)
     return PermissionSchema.from_orm(permission)
+
+
+@app.get("/api/admin/users", response_model=List[UserWithPermissions])
+def list_users(
+    db: Session = Depends(get_db),
+    _: User = Depends(auth.require_admin),
+):
+    users = db.execute(select(User)).scalars().all()
+    return users

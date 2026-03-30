@@ -71,6 +71,10 @@ class User(UserBase):
         orm_mode = True
 
 
+class UserWithPermissions(User):
+    permissions: List[Permission] = []
+
+
 class PermissionBase(BaseModel):
     device_id: str
     can_read: bool = False

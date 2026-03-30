@@ -38,3 +38,20 @@ export async function sendCommand(deviceId, command, token) {
   );
   return res.data;
 }
+
+export async function fetchUsers(token) {
+  const res = await api.get('/admin/users', { headers: { Authorization: `Bearer ${token}` } });
+  return res.data;
+}
+
+export async function createUser(payload, token) {
+  const res = await api.post('/admin/users', payload, { headers: { Authorization: `Bearer ${token}` } });
+  return res.data;
+}
+
+export async function upsertPermission(userId, payload, token) {
+  const res = await api.put(`/admin/users/${userId}/permissions`, payload, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return res.data;
+}

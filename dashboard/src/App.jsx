@@ -4,6 +4,7 @@ import DeviceList from './components/DeviceList';
 import DeviceDetail from './components/DeviceDetail';
 import StatusBadge from './components/StatusBadge';
 import TerminalFeed from './components/TerminalFeed';
+import AdminPanel from './components/AdminPanel';
 
 export default function App() {
   const [devices, setDevices] = useState([]);
@@ -137,6 +138,8 @@ export default function App() {
           <TerminalFeed device={selected} telemetry={telemetry} />
         </div>
       </section>
+
+      <AdminPanel token={token} />
     </div>
   );
 }

@@ -41,6 +41,7 @@ iot-platform
 - Admin:
   - `POST /api/admin/users` crea usuario (`username`, `password`, `role`=`admin|user`).
   - `PUT /api/admin/users/{user_id}/permissions` asigna/actualiza permisos por dispositivo (`device_id`, `can_read`, `can_write`).
+- Dashboard incluye un panel “Usuarios y permisos” (requiere token de admin) para crear usuarios y asignar permisos sin usar cURL.
 
 ## Notas de seguridad
 - Al iniciar la API se crean tablas y, si no existe, se genera el usuario admin con `API_ADMIN_USER/API_ADMIN_PASSWORD` del `.env` (password se guarda hasheada con bcrypt).
