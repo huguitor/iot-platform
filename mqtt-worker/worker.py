@@ -13,7 +13,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s - %(message)s")
+# Force log timestamps to UTC so they coinciden con los timestamps que guarda el worker.
+logging.Formatter.converter = time.gmtime
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%SZ",
+)
 
 MQTT_HOST = os.getenv("MQTT_BROKER_HOST", "mosquitto")
 MQTT_PORT = int(os.getenv("MQTT_BROKER_PORT", "1883"))
@@ -46,6 +52,24 @@ def ensure_tables(conn):
             );
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS commands (
+                id SERIAL PRIMARY KEY,
+                device_id VARCHAR(255) REFERENCES devices(device_id),
+                command VARCHAR(255) NOT NULL,
+                status VARCHAR(50) DEFAULT 'pending',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE commands
+            ADD COLUMN IF NOT EXISTS command VARCHAR(255) NOT NULL DEFAULT '';
+            """
+        )
+        cur.execute("ALTER TABLE commands ALTER COLUMN command DROP DEFAULT;")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS telemetry (
@@ -161,27 +185,16 @@ def command_dispatch_loop(conn, client: mqtt.Client):
         try:
             pending = fetch_pending_commands(conn)
             for cmd_id, device_id, command in pending:
-                # Device expects commands on /cmd (per integration doc)
                 topic = f"iot/devices/{device_id}/cmd"
-                # Allow raw JSON commands (dict) or simple string commands.
-                try:
-                    parsed = json.loads(command)
-                    if isinstance(parsed, dict):
-                        payload_obj = parsed
-                    else:
-                        payload_obj = {"cmd": command}
-                except json.JSONDecodeError:
-                    payload_obj = {"cmd": command}
-
-                payload = json.dumps(payload_obj)
-                result = client.publish(topic, payload)
+                result = client.publish(topic, command)
                 if result.rc == mqtt.MQTT_ERR_SUCCESS:
                     mark_command_sent(conn, cmd_id)
                     logging.info("Sent command %s to %s", command, device_id)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             logging.exception("Command dispatch error: %s", exc)
-        time.sleep(5)
 
+        # Controlamos el periodo de sondeo fuera del bloque try/except.
+        time.sleep(0.5)
 
 def on_connect(client, userdata, flags, rc):  # noqa: ANN001, D401
     if rc == 0:

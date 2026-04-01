@@ -39,9 +39,10 @@ export async function fetchTelemetry(deviceId, token, startTs, endTs) {
 }
 
 export async function sendCommand(deviceId, command, token) {
+  const payload = typeof command === 'string' ? command : JSON.stringify(command);
   const res = await api.post(
     `/devices/${deviceId}/command`,
-    { command },
+    { command: payload },
     { headers: { Authorization: `Bearer ${token}` } },
   );
   return res.data;
