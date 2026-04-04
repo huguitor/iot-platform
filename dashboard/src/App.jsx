@@ -1,3 +1,5 @@
+// dashboard/src/App.jsx
+
 import { useEffect, useMemo, useState } from 'react';
 import { fetchDevices, fetchTelemetry, login, sendCommand } from './api';
 import DeviceList from './components/DeviceList';
@@ -16,14 +18,16 @@ export default function App() {
   const [authForm, setAuthForm] = useState({ username: 'admin', password: 'admin123' });
   const [view, setView] = useState('dashboard');
 
-  const onlineCount = useMemo(
-    () => devices.filter((d) => (d.status || '').toLowerCase() === 'online').length,
+  const onlineDevices = useMemo(
+    () => devices.filter((d) => (d.status || '').toLowerCase() === 'online'),
     [devices]
   );
 
+  const onlineCount = onlineDevices.length;
+
   const selected = useMemo(
-    () => devices.find((d) => d.device_id === selectedId) || null,
-    [devices, selectedId]
+    () => onlineDevices.find((d) => d.device_id === selectedId) || null,
+    [onlineDevices, selectedId]
   );
 
   const refreshDevices = async () => {
@@ -31,12 +35,14 @@ export default function App() {
       const list = await fetchDevices(token);
       setDevices(list);
 
-      setSelectedId((prevSelectedId) => {
-        if (!list.length) return null;
-        if (!prevSelectedId) return list[0].device_id;
+      const onlyOnline = list.filter((d) => (d.status || '').toLowerCase() === 'online');
 
-        const stillExists = list.some((d) => d.device_id === prevSelectedId);
-        return stillExists ? prevSelectedId : list[0].device_id;
+      setSelectedId((prevSelectedId) => {
+        if (!onlyOnline.length) return null;
+        if (!prevSelectedId) return onlyOnline[0].device_id;
+
+        const stillExistsOnline = onlyOnline.some((d) => d.device_id === prevSelectedId);
+        return stillExistsOnline ? prevSelectedId : onlyOnline[0].device_id;
       });
     } catch (err) {
       console.error(err);
@@ -111,6 +117,7 @@ export default function App() {
             <p className="muted">Ingresá para ver los dispositivos</p>
           )}
         </div>
+
         <form className="auth-inline" onSubmit={handleLogin}>
           <div>
             <label>Usuario</label>
@@ -179,9 +186,9 @@ export default function App() {
               <p className="muted">Dispositivos reportando</p>
             </div>
             <div className="metric-card">
-              <p className="eyebrow">Flota</p>
-              <h2>{devices.length}</h2>
-              <p className="muted">Total de dispositivos</p>
+              <p className="eyebrow">Flota visible</p>
+              <h2>{onlineDevices.length}</h2>
+              <p className="muted">Solo equipos online</p>
             </div>
             <div className="metric-card">
               <p className="eyebrow">API</p>
@@ -192,18 +199,23 @@ export default function App() {
 
           <section className="content">
             <DeviceList
-              devices={devices}
+              devices={onlineDevices}
               onSelect={setSelectedId}
               selectedId={selectedId}
             />
+
             <div className="detail-stack">
               <DeviceDetail
                 device={selected}
                 telemetry={telemetry}
                 onSendCommand={handleSendCommand}
                 token={token}
+                role={role}
               />
-              <TerminalFeed device={selected} telemetry={telemetry} />
+
+              {role === 'admin' && (
+                <TerminalFeed device={selected} telemetry={telemetry} />
+              )}
             </div>
           </section>
         </>

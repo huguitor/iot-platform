@@ -1,33 +1,36 @@
-// src/components/DeviceDetails.jsx
-
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import StatusBadge from './StatusBadge';
 import TelemetryChart from './TelemetryChart';
 
-export default function DeviceDetail({ device, telemetry, onSendCommand, token }) {
-  const [command, setCommand] = useState('restart');
+export default function DeviceDetail({ device, telemetry, onSendCommand, token, role }) {
+  const [command, setCommand] = useState('{"cmd":"restart"}');
   const [selectedPreset, setSelectedPreset] = useState(null);
   const [sending, setSending] = useState(false);
   const [message, setMessage] = useState('');
 
+  const prevDeviceId = useRef(null);
+  const isAdmin = role === 'admin';
+
   const latestPayload = useMemo(() => telemetry?.[0]?.payload || {}, [telemetry]);
   const payloadEntries = useMemo(() => Object.entries(latestPayload), [latestPayload]);
 
+  const getValue = (key) => latestPayload?.[key];
+  const getBool = (key) => Boolean(latestPayload?.[key]);
+
   useEffect(() => {
-    setSelectedPreset(null);
-    setMessage('');
-    if (!device) {
-      setCommand('restart');
-      return;
+    if (device?.device_id !== prevDeviceId.current) {
+      setCommand('{"cmd":"restart"}');
+      setSelectedPreset(null);
+      setMessage('');
+      prevDeviceId.current = device?.device_id;
     }
-    setCommand('{"cmd":"restart"}');
   }, [device?.device_id]);
 
   if (!device) {
     return (
       <div className="panel">
         <p className="eyebrow">Dispositivo</p>
-        <h3>Selecciona un dispositivo</h3>
+        <h3>No hay dispositivos online para mostrar</h3>
       </div>
     );
   }
@@ -51,7 +54,7 @@ export default function DeviceDetail({ device, telemetry, onSendCommand, token }
       setMessage('Comando encolado');
       setSelectedPreset(null);
     } catch (err) {
-      setMessage(err?.response?.data?.detail || 'No se pudo enviar');
+      setMessage(err?.response?.data?.detail || 'No autorizado para enviar comandos');
     } finally {
       setSending(false);
     }
@@ -60,38 +63,67 @@ export default function DeviceDetail({ device, telemetry, onSendCommand, token }
   return (
     <div className="detail-layout">
       <div className="panel">
-        <div className="panel-header">
+        <div className="scada-header">
           <div>
             <p className="eyebrow">Dispositivo</p>
-            <h3>{device.device_id}</h3>
-            <p className="device-name">{device.name || 'Sin nombre'}</p>
+            <h2>{device.device_id}</h2>
+            <p className="muted">{device.name || 'Sin nombre'}</p>
           </div>
           <StatusBadge status={device.status || 'unknown'} />
         </div>
 
-        <div className="stats-grid">
-          <div className="stat-card">
-            <p className="eyebrow">Último mensaje</p>
-            <h4>{device.last_seen ? new Date(device.last_seen).toLocaleString() : 'n/d'}</h4>
+        <div className="scada-stats">
+          <StatCard
+            label="Último mensaje"
+            value={device.last_seen ? new Date(device.last_seen).toLocaleTimeString() : 'n/d'}
+          />
+          <StatCard
+            label="IP"
+            value={getValue('ip') ?? 'n/d'}
+          />
+          <StatCard
+            label="RSSI"
+            value={getValue('rssi') ?? 'n/d'}
+          />
+          <StatCard
+            label="Batería"
+            value={getValue('batt') ?? 'n/d'}
+          />
+        </div>
+
+        <div className="scada-io">
+          <div>
+            <p className="eyebrow">Entradas</p>
+            <Indicator label="BTN1" active={getBool('btn1')} />
+            <Indicator label="BTN2" active={getBool('btn2')} />
           </div>
-          <div className="stat-card">
-            <p className="eyebrow">Creado</p>
-            <h4>{device.created_at ? new Date(device.created_at).toLocaleDateString() : 'n/d'}</h4>
+
+          <div>
+            <p className="eyebrow">Salidas</p>
+            <Indicator label="OUT1" active={getBool('out1')} />
+            <Indicator label="OUT2" active={getBool('out2')} />
+            <Indicator label="SIRENA" active={getBool('sirena')} alarm />
           </div>
         </div>
 
         <div className="command-box">
           <div className="command-presets">
-            <p className="eyebrow">Comandos rápidos</p>
+            <p className="eyebrow">Acciones rápidas</p>
+            {!isAdmin && (
+              <p className="muted">
+                Visible solo como referencia. Tu usuario no tiene permisos para ejecutar comandos.
+              </p>
+            )}
+
             <div className="preset-grid">
-              {presets.map((p) => (
+              {presets.map((preset) => (
                 <button
-                  key={p.label}
+                  key={preset.label}
                   type="button"
-                  className={`preset-btn ${selectedPreset === p.label ? 'active' : ''}`}
-                  onClick={() => handlePresetClick(p)}
+                  className={`preset-btn ${selectedPreset === preset.label ? 'active' : ''}`}
+                  onClick={() => handlePresetClick(preset)}
                 >
-                  {p.label}
+                  {preset.label}
                 </button>
               ))}
             </div>
@@ -100,15 +132,20 @@ export default function DeviceDetail({ device, telemetry, onSendCommand, token }
           <div className="command-editor">
             <p className="eyebrow">Comando MQTT</p>
             <textarea
+              className="text-area"
               value={command}
               onChange={handleCommandChange}
-              className="text-area"
-              rows={3}
+              rows={4}
               placeholder='{"cmd":"restart"}'
             />
             <div className="command-actions">
-              <span className="muted">Topic: iot/devices/{device.device_id}/command</span>
-              <button className="primary" onClick={handleSend} disabled={!token || sending}>
+              <span className="muted">Topic: iot/devices/{device.device_id}/cmd</span>
+              <button
+                className="primary"
+                type="button"
+                onClick={handleSend}
+                disabled={sending}
+              >
                 {sending ? 'Enviando...' : 'Enviar'}
               </button>
             </div>
@@ -116,13 +153,13 @@ export default function DeviceDetail({ device, telemetry, onSendCommand, token }
           </div>
         </div>
 
-        {payloadEntries.length > 0 && (
+        {isAdmin && payloadEntries.length > 0 && (
           <div className="kv-grid">
-            <p className="eyebrow">Datos recientes</p>
-            {payloadEntries.map(([k, v]) => (
-              <div key={k} className="kv-row">
-                <span className="kv-key">{k}</span>
-                <span className="kv-val">{formatValue(v)}</span>
+            <p className="eyebrow">Variables actuales</p>
+            {payloadEntries.map(([key, value]) => (
+              <div key={key} className="kv-row">
+                <span className="kv-key">{key}</span>
+                <span className="kv-val">{formatValue(value)}</span>
               </div>
             ))}
           </div>
@@ -130,6 +167,24 @@ export default function DeviceDetail({ device, telemetry, onSendCommand, token }
       </div>
 
       <TelemetryChart telemetry={telemetry} />
+    </div>
+  );
+}
+
+function StatCard({ label, value }) {
+  return (
+    <div className="stat-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function Indicator({ label, active, alarm = false }) {
+  return (
+    <div className={`indicator ${active ? 'on' : ''} ${alarm ? 'alarm' : ''}`}>
+      <span className="dot"></span>
+      <span>{label}</span>
     </div>
   );
 }
