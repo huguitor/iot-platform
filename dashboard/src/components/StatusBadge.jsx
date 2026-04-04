@@ -1,3 +1,5 @@
+// src/components/StatusBadge.jsx
+
 const colors = {
   online: '#34d399',
   offline: '#f87171',

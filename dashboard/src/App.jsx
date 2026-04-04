@@ -8,7 +8,7 @@ import AdminPanel from './components/AdminPanel';
 
 export default function App() {
   const [devices, setDevices] = useState([]);
-  const [selected, setSelected] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
   const [telemetry, setTelemetry] = useState([]);
   const [token, setToken] = useState('');
   const [role, setRole] = useState('user');
@@ -16,15 +16,28 @@ export default function App() {
   const [authForm, setAuthForm] = useState({ username: 'admin', password: 'admin123' });
   const [view, setView] = useState('dashboard');
 
-  const onlineCount = useMemo(() => devices.filter((d) => (d.status || '').toLowerCase() === 'online').length, [devices]);
+  const onlineCount = useMemo(
+    () => devices.filter((d) => (d.status || '').toLowerCase() === 'online').length,
+    [devices]
+  );
+
+  const selected = useMemo(
+    () => devices.find((d) => d.device_id === selectedId) || null,
+    [devices, selectedId]
+  );
 
   const refreshDevices = async () => {
     try {
       const list = await fetchDevices(token);
       setDevices(list);
-      if (!selected && list.length > 0) {
-        setSelected(list[0]);
-      }
+
+      setSelectedId((prevSelectedId) => {
+        if (!list.length) return null;
+        if (!prevSelectedId) return list[0].device_id;
+
+        const stillExists = list.some((d) => d.device_id === prevSelectedId);
+        return stillExists ? prevSelectedId : list[0].device_id;
+      });
     } catch (err) {
       console.error(err);
     }
@@ -47,13 +60,16 @@ export default function App() {
   }, [token]);
 
   useEffect(() => {
-    if (selected?.device_id) {
-      refreshTelemetry(selected.device_id);
-      const iv = setInterval(() => refreshTelemetry(selected.device_id), 8000);
-      return () => clearInterval(iv);
+    if (!selectedId) {
+      setTelemetry([]);
+      return;
     }
-    return undefined;
-  }, [selected, token]);
+
+    refreshTelemetry(selectedId);
+    const iv = setInterval(() => refreshTelemetry(selectedId), 8000);
+
+    return () => clearInterval(iv);
+  }, [selectedId, token]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -79,8 +95,8 @@ export default function App() {
   };
 
   const handleSendCommand = async (cmd) => {
-    if (!selected) return;
-    return sendCommand(selected.device_id, cmd, token);
+    if (!selectedId) return;
+    return sendCommand(selectedId, cmd, token);
   };
 
   return (
@@ -113,7 +129,9 @@ export default function App() {
               onChange={(e) => setAuthForm({ ...authForm, password: e.target.value })}
             />
           </div>
-          <button className="primary" type="submit">{token ? 'Refrescar token' : 'Ingresar'}</button>
+          <button className="primary" type="submit">
+            {token ? 'Refrescar token' : 'Ingresar'}
+          </button>
           {authError && <p className="error">{authError}</p>}
           {token && <p className="muted">Token activo</p>}
         </form>
@@ -131,11 +149,17 @@ export default function App() {
 
       {token && (
         <div className="nav-tabs">
-          <button className={`tab ${view === 'dashboard' ? 'active' : ''}`} onClick={() => switchView('dashboard')}>
+          <button
+            className={`tab ${view === 'dashboard' ? 'active' : ''}`}
+            onClick={() => switchView('dashboard')}
+          >
             Monitoreo
           </button>
           {role === 'admin' && (
-            <button className={`tab ${view === 'admin' ? 'active' : ''}`} onClick={() => switchView('admin')}>
+            <button
+              className={`tab ${view === 'admin' ? 'active' : ''}`}
+              onClick={() => switchView('admin')}
+            >
               Usuarios
             </button>
           )}
@@ -169,8 +193,8 @@ export default function App() {
           <section className="content">
             <DeviceList
               devices={devices}
-              onSelect={(d) => setSelected(d)}
-              selectedId={selected?.device_id}
+              onSelect={setSelectedId}
+              selectedId={selectedId}
             />
             <div className="detail-stack">
               <DeviceDetail

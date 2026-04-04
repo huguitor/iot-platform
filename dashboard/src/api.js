@@ -1,3 +1,5 @@
+// src/api.js
+
 import axios from 'axios';
 
 const apiBase = import.meta.env.VITE_API_BASE || 'http://localhost/api';

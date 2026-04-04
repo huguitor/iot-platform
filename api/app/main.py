@@ -1,3 +1,5 @@
+# api/app/main.py
+
 import os
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -66,7 +68,9 @@ def list_devices(
     db: Session = Depends(get_db), current_user: User = Depends(auth.get_current_user)
 ):
     if current_user.role == "admin":
-        devices = db.execute(select(Device)).scalars().all()
+        devices = db.execute(
+            select(Device).order_by(Device.device_id)
+        ).scalars().all()
     else:
         devices = (
             db.execute(
@@ -76,14 +80,17 @@ def list_devices(
                     UserDevicePermission.user_id == current_user.id,
                     UserDevicePermission.can_read.is_(True),
                 )
+                .order_by(Device.device_id)  # 👈 agregalo también acá
             )
             .scalars()
             .all()
         )
+
     enriched = []
     for d in devices:
         status = redis_client.get(f"device:{d.device_id}:status") or d.status
         enriched.append(DeviceSchema.from_orm(d).copy(update={"status": status}))
+
     return enriched
 
 

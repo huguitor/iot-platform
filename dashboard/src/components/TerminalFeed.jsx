@@ -1,3 +1,5 @@
+// src/components/TerminalFeed.jsx
+
 import React from 'react';
 
 const timeZone = import.meta.env.VITE_TIME_ZONE || Intl.DateTimeFormat().resolvedOptions().timeZone;

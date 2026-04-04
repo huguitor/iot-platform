@@ -1,3 +1,5 @@
+// src/components/DeviceList.jsx
+
 import StatusBadge from './StatusBadge';
 
 export default function DeviceList({ devices, onSelect, selectedId }) {
@@ -13,15 +15,18 @@ export default function DeviceList({ devices, onSelect, selectedId }) {
         {devices.map((d) => (
           <button
             key={d.device_id}
+            type="button"
             className={`device-card ${selectedId === d.device_id ? 'active' : ''}`}
-            onClick={() => onSelect(d)}
+            onClick={() => onSelect(d.device_id)}
           >
             <div className="device-card__top">
               <span className="device-id">{d.device_id}</span>
               <StatusBadge status={d.status || 'unknown'} />
             </div>
             <p className="device-name">{d.name || 'Sin nombre'}</p>
-            <p className="device-meta">Último mensaje: {d.last_seen ? new Date(d.last_seen).toLocaleString() : 'n/d'}</p>
+            <p className="device-meta">
+              Último mensaje: {d.last_seen ? new Date(d.last_seen).toLocaleString() : 'n/d'}
+            </p>
           </button>
         ))}
       </div>

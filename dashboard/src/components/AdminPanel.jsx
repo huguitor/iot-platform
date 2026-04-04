@@ -1,3 +1,5 @@
+// src/components/AdminPanel.jsx
+
 import { useEffect, useState } from 'react';
 import { createUser, fetchUsers, upsertPermission } from '../api';
 

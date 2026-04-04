@@ -1,14 +1,27 @@
-import { useMemo, useState } from 'react';
+// src/components/DeviceDetails.jsx
+
+import { useEffect, useMemo, useState } from 'react';
 import StatusBadge from './StatusBadge';
 import TelemetryChart from './TelemetryChart';
 
 export default function DeviceDetail({ device, telemetry, onSendCommand, token }) {
   const [command, setCommand] = useState('restart');
+  const [selectedPreset, setSelectedPreset] = useState(null);
   const [sending, setSending] = useState(false);
   const [message, setMessage] = useState('');
 
   const latestPayload = useMemo(() => telemetry?.[0]?.payload || {}, [telemetry]);
   const payloadEntries = useMemo(() => Object.entries(latestPayload), [latestPayload]);
+
+  useEffect(() => {
+    setSelectedPreset(null);
+    setMessage('');
+    if (!device) {
+      setCommand('restart');
+      return;
+    }
+    setCommand('{"cmd":"restart"}');
+  }, [device?.device_id]);
 
   if (!device) {
     return (
@@ -19,12 +32,24 @@ export default function DeviceDetail({ device, telemetry, onSendCommand, token }
     );
   }
 
+  const handlePresetClick = (preset) => {
+    setCommand(preset.body);
+    setSelectedPreset(preset.label);
+    setMessage('');
+  };
+
+  const handleCommandChange = (e) => {
+    setCommand(e.target.value);
+    setSelectedPreset(null);
+  };
+
   const handleSend = async () => {
     setSending(true);
     setMessage('');
     try {
       await onSendCommand(command);
       setMessage('Comando encolado');
+      setSelectedPreset(null);
     } catch (err) {
       setMessage(err?.response?.data?.detail || 'No se pudo enviar');
     } finally {
@@ -43,6 +68,7 @@ export default function DeviceDetail({ device, telemetry, onSendCommand, token }
           </div>
           <StatusBadge status={device.status || 'unknown'} />
         </div>
+
         <div className="stats-grid">
           <div className="stat-card">
             <p className="eyebrow">Último mensaje</p>
@@ -53,6 +79,7 @@ export default function DeviceDetail({ device, telemetry, onSendCommand, token }
             <h4>{device.created_at ? new Date(device.created_at).toLocaleDateString() : 'n/d'}</h4>
           </div>
         </div>
+
         <div className="command-box">
           <div className="command-presets">
             <p className="eyebrow">Comandos rápidos</p>
@@ -60,19 +87,21 @@ export default function DeviceDetail({ device, telemetry, onSendCommand, token }
               {presets.map((p) => (
                 <button
                   key={p.label}
-                  className="preset-btn"
-                  onClick={() => setCommand(p.body)}
+                  type="button"
+                  className={`preset-btn ${selectedPreset === p.label ? 'active' : ''}`}
+                  onClick={() => handlePresetClick(p)}
                 >
                   {p.label}
                 </button>
               ))}
             </div>
           </div>
+
           <div className="command-editor">
             <p className="eyebrow">Comando MQTT</p>
             <textarea
               value={command}
-              onChange={(e) => setCommand(e.target.value)}
+              onChange={handleCommandChange}
               className="text-area"
               rows={3}
               placeholder='{"cmd":"restart"}'
@@ -99,6 +128,7 @@ export default function DeviceDetail({ device, telemetry, onSendCommand, token }
           </div>
         )}
       </div>
+
       <TelemetryChart telemetry={telemetry} />
     </div>
   );

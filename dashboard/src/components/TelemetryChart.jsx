@@ -1,3 +1,5 @@
+// src/components/TelemetryChart.jsx
+
 import { useEffect, useMemo, useState } from 'react';
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid } from 'recharts';
 
