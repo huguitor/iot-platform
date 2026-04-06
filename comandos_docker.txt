@@ -1,0 +1,13 @@
+* reconstruye la imagen del worker
+* levanta el contenedor actualizado
+docker compose up -d --build mqtt-worker
+
+* Recompilá solo la API:
+docker compose up -d --build api
+
+* reiniciar todo el stack
+docker compose up -d --build
+
+* bajar y subir todo limpio
+docker compose down
+docker compose up -d --build

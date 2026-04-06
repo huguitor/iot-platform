@@ -88,3 +88,29 @@ class Permission(PermissionBase):
 
 class UserWithPermissions(User):
     permissions: List[Permission] = []
+
+# ============================================================
+# AUDIT
+# ============================================================
+
+class AuditLog(BaseModel):
+    id: int
+    action_type: str
+    device_id: Optional[str]
+    payload: Optional[Any]
+    result: str
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
+class UserSession(BaseModel):
+    id: int
+    username: str
+    login_at: datetime
+    last_seen: Optional[datetime]
+    is_active: bool
+
+    class Config:
+        orm_mode = True

@@ -820,3 +820,159 @@ h4 {
     grid-template-columns: 1fr 1fr;
   }
 }
+/* ===== MQTT EVENTS PANEL ===== */
+
+.mqtt-filters {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+  margin-bottom: 14px;
+}
+
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-field label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.mqtt-datetime {
+  min-height: 44px;
+}
+
+.mqtt-desktop-view {
+  display: block;
+}
+
+.mqtt-mobile-view {
+  display: none;
+}
+
+.mqtt-card-list {
+  display: grid;
+  gap: 10px;
+}
+
+.mqtt-card {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  box-shadow: var(--shadow);
+}
+
+.mqtt-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.mqtt-card-time {
+  margin: 0;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.mqtt-card-summary {
+  margin: 10px 0 0;
+  color: var(--text);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.mqtt-card-detail {
+  margin-top: 12px;
+}
+
+.mqtt-detail-btn {
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.mqtt-mobile-payload {
+  margin-top: 10px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.mqtt-empty {
+  padding: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.tab-label-mobile {
+  display: none;
+}
+
+.tab-label-desktop {
+  display: inline;
+}
+
+/* Ajustes de tabs para pantallas más chicas */
+@media (max-width: 760px) {
+  .nav-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    width: 100%;
+    gap: 6px;
+  }
+
+  .tab {
+    flex: 1 1 calc(50% - 6px);
+    min-width: 0;
+    padding: 9px 10px;
+    font-size: 13px;
+    text-align: center;
+  }
+
+  .tab-label-desktop {
+    display: none;
+  }
+
+  .tab-label-mobile {
+    display: inline;
+  }
+
+  .mqtt-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .mqtt-desktop-view {
+    display: none;
+  }
+
+  .mqtt-mobile-view {
+    display: block;
+  }
+
+  .mqtt-card-time {
+    font-size: 14px;
+  }
+
+  .mqtt-card-summary {
+    font-size: 14px;
+  }
+}
+
+@media (max-width: 480px) {
+  .tab {
+    flex: 1 1 100%;
+  }
+
+  .mqtt-card-top {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .mqtt-detail-btn {
+    width: 100%;
+  }
+}
