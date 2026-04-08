@@ -17,14 +17,11 @@ from dotenv import load_dotenv
 # ============================================================
 # CARGA DE VARIABLES DE ENTORNO
 # ============================================================
-# Permite leer .env local en desarrollo y variables del contenedor en producción.
 load_dotenv()
 
 # ============================================================
 # CONFIG LOGGING
 # ============================================================
-# Dejamos timestamps en UTC para que todo quede consistente:
-# logs del worker, base de datos y correlación con API.
 logging.Formatter.converter = time.gmtime
 logging.basicConfig(
     level=logging.INFO,
@@ -52,7 +49,6 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 # ============================================================
 # CONFIG PRESENCIA / OFFLINE
 # ============================================================
-# Si un equipo no reporta durante este tiempo, lo marcamos offline.
 DEVICE_OFFLINE_TIMEOUT_SECONDS = int(os.getenv("DEVICE_OFFLINE_TIMEOUT_SECONDS", "600"))
 OFFLINE_CHECK_INTERVAL_SECONDS = int(os.getenv("OFFLINE_CHECK_INTERVAL_SECONDS", "60"))
 
@@ -68,7 +64,6 @@ redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 def utcnow() -> datetime:
     """
     Devuelve hora actual con zona UTC.
-    Tener una única función ayuda a mantener consistencia.
     """
     return datetime.now(timezone.utc)
 
@@ -76,14 +71,43 @@ def utcnow() -> datetime:
 def connect_db():
     """
     Abre una conexión nueva a PostgreSQL.
-
-    IMPORTANTE:
-    No conviene compartir una misma conexión entre múltiples hilos.
-    Por eso cada loop/hilo importante usa su propia conexión.
     """
     conn = psycopg2.connect(DB_URL)
     conn.autocommit = True
     return conn
+
+
+def ensure_connection(conn):
+    """
+    Garantiza una conexión PostgreSQL válida.
+
+    Casos que cubre:
+    - conn es None
+    - conn está cerrada
+    - conn parece viva pero quedó inválida
+
+    Si falla, crea una nueva conexión.
+    """
+    try:
+        if conn is None or conn.closed != 0:
+            logging.warning("DB connection is closed or missing. Reconnecting...")
+            return connect_db()
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1;")
+
+        return conn
+
+    except Exception as exc:
+        logging.warning("DB connection check failed. Reconnecting... (%s)", exc)
+
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+
+        return connect_db()
 
 
 def safe_json_loads(payload_raw: bytes) -> Optional[Any]:
@@ -100,10 +124,6 @@ def safe_json_loads(payload_raw: bytes) -> Optional[Any]:
 def payload_to_json_compatible(payload: Any) -> Any:
     """
     Convierte payload a algo apto para guardar en JSONB.
-
-    Casos:
-    - dict/list/bool/int/float/... -> lo guarda tal cual
-    - bytes/string no JSON -> lo envuelve en un dict
     """
     if isinstance(payload, (dict, list, int, float, bool)) or payload is None:
         return payload
@@ -141,19 +161,25 @@ def parse_device_id_from_topic(topic: str) -> Optional[str]:
 # ============================================================
 def ensure_tables(conn):
     """
-    Crea tablas base operativas y nuevas tablas de auditoría MQTT.
+    Crea y ajusta tablas necesarias.
 
-    Mantengo tus tablas:
+    Mantiene:
     - devices
     - commands
     - telemetry
 
-    Agrego:
+    Agrega:
     - mqtt_events
     - audit_logs
 
+    Mejora commands para trazabilidad:
+    - dispatched_at
+    - acknowledged_at
+    - response_payload
+
     Nota:
-    'audit_logs' la dejo compatible con la futura integración del backend.
+    acknowledged_at y response_payload quedan listos para futuro,
+    aunque hoy el protocolo real no confirma por command_id.
     """
     with conn.cursor() as cur:
         # --------------------------------------------------------
@@ -180,21 +206,47 @@ def ensure_tables(conn):
             CREATE TABLE IF NOT EXISTS commands (
                 id SERIAL PRIMARY KEY,
                 device_id VARCHAR(255) REFERENCES devices(device_id),
-                command VARCHAR(255) NOT NULL,
+                command TEXT NOT NULL,
                 status VARCHAR(50) DEFAULT 'pending',
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
             """
         )
 
-        # Por compatibilidad con instalaciones previas.
+        # Compatibilidad con instalaciones previas
         cur.execute(
             """
             ALTER TABLE commands
-            ADD COLUMN IF NOT EXISTS command VARCHAR(255) NOT NULL DEFAULT '';
+            ADD COLUMN IF NOT EXISTS command TEXT NOT NULL DEFAULT '';
             """
         )
         cur.execute("ALTER TABLE commands ALTER COLUMN command DROP DEFAULT;")
+
+        cur.execute(
+            """
+            ALTER TABLE commands
+            ADD COLUMN IF NOT EXISTS dispatched_at TIMESTAMPTZ NULL;
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE commands
+            ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ NULL;
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE commands
+            ADD COLUMN IF NOT EXISTS response_payload JSONB NULL;
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_commands_status_created_at
+            ON commands (status, created_at ASC);
+            """
+        )
 
         # --------------------------------------------------------
         # TABLA telemetry
@@ -213,17 +265,15 @@ def ensure_tables(conn):
         # --------------------------------------------------------
         # TABLA mqtt_events
         # --------------------------------------------------------
-        # Esta es la tabla profesional para trazabilidad MQTT.
-        # Guarda tanto lo que entra como lo que sale.
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS mqtt_events (
                 id SERIAL PRIMARY KEY,
                 device_id VARCHAR(255),
-                direction VARCHAR(20) NOT NULL,      -- inbound / outbound
+                direction VARCHAR(20) NOT NULL,
                 topic VARCHAR(500) NOT NULL,
                 payload JSONB,
-                event_type VARCHAR(100) NOT NULL,   -- telemetry/state/status/response/command_dispatch/...
+                event_type VARCHAR(100) NOT NULL,
                 processed_ok BOOLEAN NOT NULL DEFAULT TRUE,
                 related_command_id INTEGER NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -231,7 +281,6 @@ def ensure_tables(conn):
             """
         )
 
-        # Índices útiles para consultas futuras.
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_mqtt_events_device_created_at
@@ -248,8 +297,6 @@ def ensure_tables(conn):
         # --------------------------------------------------------
         # TABLA audit_logs
         # --------------------------------------------------------
-        # La dejamos amplia para usarla también desde API más adelante.
-        # Acá desde el worker registraremos eventos operativos MQTT.
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_logs (
@@ -262,8 +309,23 @@ def ensure_tables(conn):
                 result VARCHAR(50) NOT NULL,
                 ip_address VARCHAR(255) NULL,
                 user_agent TEXT NULL,
+                channel_type VARCHAR(50) NULL,
+                channel_identifier VARCHAR(255) NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
+            """
+        )
+
+        cur.execute(
+            """
+            ALTER TABLE audit_logs
+            ADD COLUMN IF NOT EXISTS channel_type VARCHAR(50) NULL;
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE audit_logs
+            ADD COLUMN IF NOT EXISTS channel_identifier VARCHAR(255) NULL;
             """
         )
 
@@ -277,6 +339,18 @@ def ensure_tables(conn):
             """
             CREATE INDEX IF NOT EXISTS idx_audit_logs_action_type
             ON audit_logs (action_type);
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_channel_type
+            ON audit_logs (channel_type);
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_channel_identifier
+            ON audit_logs (channel_identifier);
             """
         )
 
@@ -321,29 +395,34 @@ def insert_telemetry(conn, device_id: str, timestamp: datetime, payload: dict):
         )
 
 
-def mark_command_sent(conn, command_id: int):
+def mark_command_dispatched(conn, command_id: int):
+    """
+    Marca comando como despachado al broker.
+
+    OJO:
+    Esto no significa ejecutado por el dispositivo.
+    Solo significa que el worker lo publicó correctamente.
+    """
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE commands
-            SET status = 'sent'
+            SET status = 'dispatched',
+                dispatched_at = %s
             WHERE id = %s
+              AND status = 'pending';
             """,
-            (command_id,),
+            (utcnow(), command_id),
         )
 
 
 def mark_command_failed(conn, command_id: int):
-    """
-    Marca comando como failed cuando el publish al broker falla.
-    Esto mejora mucho la trazabilidad.
-    """
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE commands
             SET status = 'failed'
-            WHERE id = %s
+            WHERE id = %s;
             """,
             (command_id,),
         )
@@ -378,10 +457,6 @@ def insert_mqtt_event(
     processed_ok: bool,
     related_command_id: Optional[int] = None,
 ):
-    """
-    Guarda un evento de comunicación MQTT en tabla separada.
-    Esta tabla es la base de la trazabilidad técnica.
-    """
     payload_json = payload_to_json_compatible(payload)
 
     with conn.cursor() as cur:
@@ -423,11 +498,9 @@ def insert_audit_log(
     username: Optional[str] = None,
     ip_address: Optional[str] = None,
     user_agent: Optional[str] = None,
+    channel_type: Optional[str] = None,
+    channel_identifier: Optional[str] = None,
 ):
-    """
-    Guarda eventos de auditoría de más alto nivel.
-    En esta etapa lo usaremos sobre todo para acciones MQTT del worker.
-    """
     payload_json = payload_to_json_compatible(payload)
 
     with conn.cursor() as cur:
@@ -442,9 +515,11 @@ def insert_audit_log(
                 result,
                 ip_address,
                 user_agent,
+                channel_type,
+                channel_identifier,
                 created_at
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
             """,
             (
                 user_id,
@@ -455,6 +530,8 @@ def insert_audit_log(
                 result,
                 ip_address,
                 user_agent,
+                channel_type,
+                channel_identifier,
                 utcnow(),
             ),
         )
@@ -464,53 +541,29 @@ def insert_audit_log(
 # PRESENCIA / HEARTBEAT
 # ============================================================
 def touch_device_presence(conn, device_id: str, status: str = "online"):
-    """
-    Actualiza presencia del equipo en DB y Redis.
-
-    DB:
-    - status
-    - last_seen
-
-    Redis:
-    - status efímero
-    - heartbeat timestamp
-    """
     now = utcnow()
 
-    # Actualiza estado persistente
     upsert_device(conn, device_id, status=status, last_seen=now)
 
-    # Cache rápida en Redis para dashboard/API
-    redis_client.set(
-        f"device:{device_id}:status",
-        status,
-        ex=DEVICE_OFFLINE_TIMEOUT_SECONDS,
-    )
-
-    # Heartbeat separado para debugging / watchdog
-    redis_client.set(
-        f"device:{device_id}:last_seen_ts",
-        str(int(now.timestamp())),
-        ex=max(DEVICE_OFFLINE_TIMEOUT_SECONDS * 4, 120),
-    )
+    try:
+        redis_client.set(
+            f"device:{device_id}:status",
+            status,
+            ex=DEVICE_OFFLINE_TIMEOUT_SECONDS,
+        )
+        redis_client.set(
+            f"device:{device_id}:last_seen_ts",
+            str(int(now.timestamp())),
+            ex=max(DEVICE_OFFLINE_TIMEOUT_SECONDS * 4, 120),
+        )
+    except Exception as exc:
+        logging.exception("Redis presence update failed for %s: %s", device_id, exc)
 
 
 # ============================================================
 # HANDLERS MQTT ENTRANTES
 # ============================================================
 def handle_telemetry(conn, topic: str, payload_raw: bytes):
-    """
-    Maneja topics:
-    - /telemetry
-    - /state
-
-    Lo que hace:
-    1. Intenta parsear JSON
-    2. Obtiene device_id
-    3. Actualiza presencia
-    4. Guarda telemetry
-    5. Registra mqtt_event inbound
-    """
     data = safe_json_loads(payload_raw)
     if data is None:
         logging.warning("Invalid JSON on %s", topic)
@@ -529,7 +582,32 @@ def handle_telemetry(conn, topic: str, payload_raw: bytes):
             conn,
             action_type="mqtt_invalid_json_received",
             device_id=device_id,
-            payload={"topic": topic, "payload": payload_raw.decode("utf-8", errors="replace")},
+            payload={
+                "topic": topic,
+                "payload": payload_raw.decode("utf-8", errors="replace"),
+            },
+            result="failed",
+        )
+        return
+
+    if not isinstance(data, dict):
+        logging.warning("Unexpected JSON type on %s: %s", topic, type(data).__name__)
+
+        device_id = parse_device_id_from_topic(topic)
+        insert_mqtt_event(
+            conn,
+            device_id=device_id,
+            direction="inbound",
+            topic=topic,
+            payload=data,
+            event_type="mqtt_unexpected_payload_type",
+            processed_ok=False,
+        )
+        insert_audit_log(
+            conn,
+            action_type="mqtt_unexpected_payload_type",
+            device_id=device_id,
+            payload={"topic": topic, "payload": data},
             result="failed",
         )
         return
@@ -558,7 +636,6 @@ def handle_telemetry(conn, topic: str, payload_raw: bytes):
 
     timestamp = utcnow()
 
-    # Conservamos timestamp del equipo si viene en payload
     device_ts = data.get("ts")
     if device_ts is not None:
         try:
@@ -584,12 +661,6 @@ def handle_telemetry(conn, topic: str, payload_raw: bytes):
 
 
 def handle_status(conn, topic: str, payload_raw: bytes):
-    """
-    Maneja mensajes /status.
-
-    No siempre vienen como JSON.
-    Normalmente son strings: online, offline, etc.
-    """
     status_text = payload_raw.decode("utf-8", errors="replace").strip() or "unknown"
     device_id = parse_device_id_from_topic(topic)
 
@@ -618,30 +689,38 @@ def handle_status(conn, topic: str, payload_raw: bytes):
 
     if normalized == "online":
         touch_device_presence(conn, device_id, status="online")
+
     elif normalized == "offline":
         upsert_device(conn, device_id, status="offline", last_seen=now)
-        redis_client.set(
-            f"device:{device_id}:status",
-            "offline",
-            ex=max(DEVICE_OFFLINE_TIMEOUT_SECONDS * 4, 120),
-        )
-        redis_client.set(
-            f"device:{device_id}:last_seen_ts",
-            str(int(now.timestamp())),
-            ex=max(DEVICE_OFFLINE_TIMEOUT_SECONDS * 4, 120),
-        )
+        try:
+            redis_client.set(
+                f"device:{device_id}:status",
+                "offline",
+                ex=max(DEVICE_OFFLINE_TIMEOUT_SECONDS * 4, 120),
+            )
+            redis_client.set(
+                f"device:{device_id}:last_seen_ts",
+                str(int(now.timestamp())),
+                ex=max(DEVICE_OFFLINE_TIMEOUT_SECONDS * 4, 120),
+            )
+        except Exception as exc:
+            logging.exception("Redis offline status update failed for %s: %s", device_id, exc)
+
     else:
         upsert_device(conn, device_id, status=normalized, last_seen=now)
-        redis_client.set(
-            f"device:{device_id}:status",
-            normalized,
-            ex=max(DEVICE_OFFLINE_TIMEOUT_SECONDS * 4, 120),
-        )
-        redis_client.set(
-            f"device:{device_id}:last_seen_ts",
-            str(int(now.timestamp())),
-            ex=max(DEVICE_OFFLINE_TIMEOUT_SECONDS * 4, 120),
-        )
+        try:
+            redis_client.set(
+                f"device:{device_id}:status",
+                normalized,
+                ex=max(DEVICE_OFFLINE_TIMEOUT_SECONDS * 4, 120),
+            )
+            redis_client.set(
+                f"device:{device_id}:last_seen_ts",
+                str(int(now.timestamp())),
+                ex=max(DEVICE_OFFLINE_TIMEOUT_SECONDS * 4, 120),
+            )
+        except Exception as exc:
+            logging.exception("Redis custom status update failed for %s: %s", device_id, exc)
 
     insert_mqtt_event(
         conn,
@@ -658,14 +737,15 @@ def handle_status(conn, topic: str, payload_raw: bytes):
 
 def handle_response(conn, topic: str, payload_raw: bytes):
     """
-    Maneja mensajes /response.
-
-    Estos mensajes son muy valiosos para trazabilidad porque suelen ser
-    la respuesta explícita del dispositivo a un comando.
+    Hoy el sistema real no usa response como confirmación fuerte
+    de comandos. Igual lo guardamos para trazabilidad.
     """
     device_id = parse_device_id_from_topic(topic)
     parsed = safe_json_loads(payload_raw)
     payload = parsed if parsed is not None else payload_raw.decode("utf-8", errors="replace")
+
+    if device_id:
+        touch_device_presence(conn, device_id, status="online")
 
     insert_mqtt_event(
         conn,
@@ -677,6 +757,14 @@ def handle_response(conn, topic: str, payload_raw: bytes):
         processed_ok=True,
     )
 
+    insert_audit_log(
+        conn,
+        action_type="mqtt_response_received",
+        device_id=device_id,
+        payload=payload,
+        result="success",
+    )
+
     logging.info("Response from %s: %s", topic, payload)
 
 
@@ -684,15 +772,11 @@ def handle_response(conn, topic: str, payload_raw: bytes):
 # WATCHDOG DE PRESENCIA
 # ============================================================
 def presence_watchdog_loop():
-    """
-    Recorre dispositivos y marca offline los que superan el timeout.
-
-    Usa su propia conexión DB.
-    """
-    conn = connect_db()
+    conn = None
 
     while True:
         try:
+            conn = ensure_connection(conn)
             now_ts = int(time.time())
 
             with conn.cursor() as cur:
@@ -706,15 +790,23 @@ def presence_watchdog_loop():
                 age_seconds = now_ts - int(last_seen.timestamp())
 
                 if age_seconds > DEVICE_OFFLINE_TIMEOUT_SECONDS:
-                    current_status = redis_client.get(f"device:{device_id}:status")
+                    current_status = None
+                    try:
+                        current_status = redis_client.get(f"device:{device_id}:status")
+                    except Exception as exc:
+                        logging.exception("Redis read failed for %s: %s", device_id, exc)
 
                     if current_status != "offline":
                         update_device_status(conn, device_id, "offline")
-                        redis_client.set(
-                            f"device:{device_id}:status",
-                            "offline",
-                            ex=max(DEVICE_OFFLINE_TIMEOUT_SECONDS * 4, 120),
-                        )
+
+                        try:
+                            redis_client.set(
+                                f"device:{device_id}:status",
+                                "offline",
+                                ex=max(DEVICE_OFFLINE_TIMEOUT_SECONDS * 4, 120),
+                            )
+                        except Exception as exc:
+                            logging.exception("Redis offline write failed for %s: %s", device_id, exc)
 
                         insert_mqtt_event(
                             conn,
@@ -740,6 +832,24 @@ def presence_watchdog_loop():
                             age_seconds,
                         )
 
+        except psycopg2.InterfaceError as exc:
+            logging.exception("Presence watchdog DB interface error: %s", exc)
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
+            conn = None
+
+        except psycopg2.OperationalError as exc:
+            logging.exception("Presence watchdog DB operational error: %s", exc)
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
+            conn = None
+
         except Exception as exc:
             logging.exception("Presence watchdog error: %s", exc)
 
@@ -753,32 +863,79 @@ def command_dispatch_loop(client: mqtt.Client):
     """
     Busca comandos pendientes en DB y los publica por MQTT.
 
-    MUY IMPORTANTE:
-    Esta función usa su propia conexión DB para evitar compartir conexión
-    con callbacks MQTT u otros hilos.
+    Realidad actual del sistema:
+    - Topic: iot/devices/{device_id}/cmd
+    - Payload: JSON plano, por ejemplo:
+      {"cmd":"set_output","output":2,"value":true}
+
+    Por eso:
+    - NO envolvemos el comando en otro JSON
+    - NO agregamos command_id todavía
+    - marcamos 'dispatched', no 'sent'
     """
-    conn = connect_db()
+    conn = None
 
     while True:
         try:
+            conn = ensure_connection(conn)
             pending = fetch_pending_commands(conn)
 
             for cmd_id, device_id, command in pending:
                 topic = f"iot/devices/{device_id}/cmd"
 
-                logging.info("Publishing command to %s: %s", topic, command)
-
-                result = client.publish(topic, command)
-
-                if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                    mark_command_sent(conn, cmd_id)
+                # command viene desde DB como string.
+                # Esperamos que sea JSON válido del protocolo actual.
+                parsed_command = safe_json_loads(command.encode("utf-8"))
+                if parsed_command is None:
+                    # Si no es JSON válido, lo marcamos failed y seguimos.
+                    mark_command_failed(conn, cmd_id)
 
                     insert_mqtt_event(
                         conn,
                         device_id=device_id,
                         direction="outbound",
                         topic=topic,
-                        payload={"command": command},
+                        payload={"raw_command": command},
+                        event_type="mqtt_command_invalid_payload",
+                        processed_ok=False,
+                        related_command_id=cmd_id,
+                    )
+
+                    insert_audit_log(
+                        conn,
+                        action_type="mqtt_command_invalid_payload",
+                        device_id=device_id,
+                        payload={
+                            "command_id": cmd_id,
+                            "topic": topic,
+                            "raw_command": command,
+                        },
+                        result="failed",
+                    )
+
+                    logging.error(
+                        "Invalid command JSON for command_id=%s device_id=%s payload=%s",
+                        cmd_id,
+                        device_id,
+                        command,
+                    )
+                    continue
+
+                payload_text = json.dumps(parsed_command, ensure_ascii=False)
+
+                logging.info("Publishing command_id=%s to %s: %s", cmd_id, topic, payload_text)
+
+                result = client.publish(topic, payload_text)
+
+                if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                    mark_command_dispatched(conn, cmd_id)
+
+                    insert_mqtt_event(
+                        conn,
+                        device_id=device_id,
+                        direction="outbound",
+                        topic=topic,
+                        payload=parsed_command,
                         event_type="mqtt_command_dispatched",
                         processed_ok=True,
                         related_command_id=cmd_id,
@@ -791,12 +948,12 @@ def command_dispatch_loop(client: mqtt.Client):
                         payload={
                             "command_id": cmd_id,
                             "topic": topic,
-                            "command": command,
+                            "command_payload": parsed_command,
                         },
                         result="success",
                     )
 
-                    logging.info("Sent command %s to %s", command, device_id)
+                    logging.info("Dispatched command_id=%s to %s", cmd_id, device_id)
 
                 else:
                     mark_command_failed(conn, cmd_id)
@@ -807,7 +964,8 @@ def command_dispatch_loop(client: mqtt.Client):
                         direction="outbound",
                         topic=topic,
                         payload={
-                            "command": command,
+                            "command_id": cmd_id,
+                            "command_payload": parsed_command,
                             "mqtt_rc": result.rc,
                         },
                         event_type="mqtt_command_failed",
@@ -822,17 +980,36 @@ def command_dispatch_loop(client: mqtt.Client):
                         payload={
                             "command_id": cmd_id,
                             "topic": topic,
-                            "command": command,
+                            "command_payload": parsed_command,
                             "mqtt_rc": result.rc,
                         },
                         result="failed",
                     )
 
                     logging.error(
-                        "Failed to publish command to %s (rc=%s)",
+                        "Failed to publish command_id=%s to %s (rc=%s)",
+                        cmd_id,
                         device_id,
                         result.rc,
                     )
+
+        except psycopg2.InterfaceError as exc:
+            logging.exception("Command dispatch DB interface error: %s", exc)
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
+            conn = None
+
+        except psycopg2.OperationalError as exc:
+            logging.exception("Command dispatch DB operational error: %s", exc)
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
+            conn = None
 
         except Exception as exc:
             logging.exception("Command dispatch error: %s", exc)
@@ -844,9 +1021,6 @@ def command_dispatch_loop(client: mqtt.Client):
 # CALLBACKS MQTT
 # ============================================================
 def on_connect(client, userdata, flags, rc):
-    """
-    Se ejecuta al conectar con el broker.
-    """
     if rc == 0:
         logging.info("Connected to MQTT broker")
 
@@ -863,12 +1037,12 @@ def on_connect(client, userdata, flags, rc):
 def on_message(client, userdata, msg):
     """
     Callback principal de mensajes entrantes.
-
-    Usamos una conexión DB exclusiva para callbacks MQTT.
+    Revalida conexión DB antes de usarla.
     """
-    conn = userdata["db"]
-
     try:
+        userdata["db"] = ensure_connection(userdata.get("db"))
+        conn = userdata["db"]
+
         if msg.topic.endswith("/telemetry") or msg.topic.endswith("/state"):
             handle_telemetry(conn, msg.topic, msg.payload)
 
@@ -879,8 +1053,6 @@ def on_message(client, userdata, msg):
             handle_response(conn, msg.topic, msg.payload)
 
         else:
-            # Esto normalmente no debería ocurrir porque nos suscribimos a topics conocidos,
-            # pero si pasa, queda registrado.
             device_id = parse_device_id_from_topic(msg.topic)
 
             insert_mqtt_event(
@@ -906,11 +1078,31 @@ def on_message(client, userdata, msg):
 
             logging.warning("Unhandled MQTT topic: %s", msg.topic)
 
+    except psycopg2.InterfaceError as exc:
+        logging.exception("MQTT callback DB interface error on %s: %s", msg.topic, exc)
+        try:
+            if userdata.get("db") is not None:
+                userdata["db"].close()
+        except Exception:
+            pass
+        userdata["db"] = None
+
+    except psycopg2.OperationalError as exc:
+        logging.exception("MQTT callback DB operational error on %s: %s", msg.topic, exc)
+        try:
+            if userdata.get("db") is not None:
+                userdata["db"].close()
+        except Exception:
+            pass
+        userdata["db"] = None
+
     except Exception as exc:
         logging.exception("Error handling message on %s: %s", msg.topic, exc)
 
-        # Intentamos igualmente dejar evidencia del problema.
         try:
+            userdata["db"] = ensure_connection(userdata.get("db"))
+            conn = userdata["db"]
+
             device_id = parse_device_id_from_topic(msg.topic)
             insert_mqtt_event(
                 conn,

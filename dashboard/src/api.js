@@ -9,6 +9,40 @@ export const api = axios.create({
 });
 
 // ============================================================
+// HELPER - NORMALIZAR ERRORES BACKEND
+// ============================================================
+export function getApiErrorMessage(err, fallback = 'Ocurrió un error') {
+  const detail = err?.response?.data?.detail;
+
+  if (!detail) return fallback;
+
+  if (typeof detail === 'string') return detail;
+
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (item?.msg) {
+          const field =
+            Array.isArray(item.loc) && item.loc.length
+              ? item.loc[item.loc.length - 1]
+              : 'campo';
+          return `${field}: ${item.msg}`;
+        }
+        return JSON.stringify(item);
+      })
+      .join(' | ');
+  }
+
+  if (typeof detail === 'object') {
+    if (detail.msg) return detail.msg;
+    return JSON.stringify(detail);
+  }
+
+  return fallback;
+}
+
+// ============================================================
 // LOGIN
 // ============================================================
 export async function login(username, password) {
@@ -96,18 +130,57 @@ export async function upsertPermission(userId, payload, token) {
 }
 
 // ============================================================
+// ADMIN - USER CHANNELS
+// ============================================================
+export async function fetchUserChannels(userId, token) {
+  const res = await api.get(`/admin/users/${userId}/channels`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  return res.data;
+}
+
+export async function createUserChannel(userId, payload, token) {
+  const res = await api.post(`/admin/users/${userId}/channels`, payload, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  return res.data;
+}
+
+export async function updateUserChannel(userId, channelId, payload, token) {
+  const res = await api.put(
+    `/admin/users/${userId}/channels/${channelId}`,
+    payload,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+
+  return res.data;
+}
+
+export async function deleteUserChannel(userId, channelId, token) {
+  const res = await api.delete(`/admin/users/${userId}/channels/${channelId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  return res.data;
+}
+
+// ============================================================
 // ADMIN - AUDITORÍA
 // ============================================================
 export async function fetchAuditLogs(token, filters = {}) {
   const params = {};
 
-  // límite por defecto
   params.limit = filters.limit || 100;
 
-  // solo agregamos filtros si vienen con valor
   if (filters.user) params.user = filters.user;
   if (filters.device) params.device = filters.device;
   if (filters.action) params.action = filters.action;
+  if (filters.channel_type) params.channel_type = filters.channel_type;
+  if (filters.channel_identifier) params.channel_identifier = filters.channel_identifier;
 
   const res = await api.get('/admin/audit', {
     params,
@@ -116,6 +189,7 @@ export async function fetchAuditLogs(token, filters = {}) {
 
   return res.data;
 }
+
 // ============================================================
 // ADMIN - AUDITORÍA EVENTOS MQTT
 // ============================================================

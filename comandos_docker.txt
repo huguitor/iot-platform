@@ -5,9 +5,18 @@ docker compose up -d --build mqtt-worker
 * Recompilá solo la API:
 docker compose up -d --build api
 
+* reconstruir el dashboard.
+docker compose up --build dashboard
+
 * reiniciar todo el stack
 docker compose up -d --build
 
 * bajar y subir todo limpio
 docker compose down
 docker compose up -d --build
+
+id | username |    role    | pass
+----+----------+------------+-----------
+  1 | admin    | admin      | admin123
+  2 | hugo     | superadmin | hugo1234
+  3 | juan     | user       | juan1234

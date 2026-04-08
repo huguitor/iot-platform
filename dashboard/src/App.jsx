@@ -23,10 +23,11 @@ export default function App() {
   });
   const [view, setView] = useState('dashboard');
 
+  const isAdminLike = role === 'admin' || role === 'superadmin';
+
   // ============================================================
   // DERIVADOS
   // ============================================================
-  // Solo mostramos equipos online en el tablero principal.
   const onlineDevices = useMemo(
     () => devices.filter((d) => (d.status || '').toLowerCase() === 'online'),
     [devices]
@@ -34,11 +35,24 @@ export default function App() {
 
   const onlineCount = onlineDevices.length;
 
-  // Dispositivo seleccionado actual, pero solo entre los online.
   const selected = useMemo(
     () => onlineDevices.find((d) => d.device_id === selectedId) || null,
     [onlineDevices, selectedId]
   );
+
+  // ============================================================
+  // LOGOUT
+  // ============================================================
+  const handleLogout = () => {
+    setToken('');
+    setRole('user');
+    setDevices([]);
+    setTelemetry([]);
+    setSelectedId(null);
+    setAuthError('');
+    setView('dashboard');
+    window.location.hash = '';
+  };
 
   // ============================================================
   // CARGA DE DISPOSITIVOS
@@ -133,10 +147,6 @@ export default function App() {
   // ============================================================
   // LECTURA INICIAL DE HASH
   // ============================================================
-  // Soporta:
-  // - #admin
-  // - #audit
-  // - #mqtt
   useEffect(() => {
     const hash = window.location.hash.replace('#', '');
 
@@ -152,9 +162,6 @@ export default function App() {
   // ============================================================
   const switchView = (next) => {
     setView(next);
-
-    // Dashboard queda limpio sin hash.
-    // Admin y audit usan hash para permitir acceso directo.
     window.location.hash = next === 'dashboard' ? '' : next;
   };
 
@@ -178,7 +185,12 @@ export default function App() {
 
           {token ? (
             <p className="muted">
-              Sesión: {role === 'admin' ? 'Administrador' : 'Usuario'}
+              Sesión:{' '}
+              {role === 'superadmin'
+                ? 'Super Administrador'
+                : role === 'admin'
+                ? 'Administrador'
+                : 'Usuario'}
             </p>
           ) : (
             <p className="muted">Ingresá para ver los dispositivos</p>
@@ -213,6 +225,16 @@ export default function App() {
             {token ? 'Refrescar token' : 'Ingresar'}
           </button>
 
+          {token && (
+            <button
+              className="ghost"
+              type="button"
+              onClick={handleLogout}
+            >
+              Cerrar sesión
+            </button>
+          )}
+
           {authError && <p className="error">{authError}</p>}
           {token && <p className="muted">Token activo</p>}
         </form>
@@ -245,7 +267,7 @@ export default function App() {
             Monitoreo
           </button>
 
-          {role === 'admin' && (
+          {isAdminLike && (
             <>
               <button
                 className={`tab ${view === 'admin' ? 'active' : ''}`}
@@ -264,7 +286,7 @@ export default function App() {
               <button
                 className={`tab ${view === 'mqtt' ? 'active' : ''}`}
                 onClick={() => switchView('mqtt')}
->
+              >
                 <span className="tab-label-desktop">Eventos MQTT</span>
                 <span className="tab-label-mobile">Eventos</span>
               </button>
@@ -322,7 +344,7 @@ export default function App() {
                 role={role}
               />
 
-              {role === 'admin' && (
+              {isAdminLike && (
                 <TerminalFeed device={selected} telemetry={telemetry} />
               )}
             </div>
@@ -333,21 +355,22 @@ export default function App() {
       {/* ====================================================== */}
       {/* VISTA ADMINISTRACIÓN DE USUARIOS */}
       {/* ====================================================== */}
-      {token && view === 'admin' && role === 'admin' && (
-        <AdminPanel token={token} />
+      {token && view === 'admin' && isAdminLike && (
+        <AdminPanel token={token} role={role} />
       )}
 
       {/* ====================================================== */}
       {/* VISTA AUDITORÍA */}
       {/* ====================================================== */}
-      {token && view === 'audit' && role === 'admin' && (
+      {token && view === 'audit' && isAdminLike && (
         <AuditPanel token={token} />
       )}
+
       {/* ====================================================== */}
-      {/* VISTA AUDITORÍA MQTT */}
+      {/* VISTA EVENTOS MQTT */}
       {/* ====================================================== */}
-      {token && view === 'mqtt' && role === 'admin' && (
-      <MqttEventsPanel token={token} />
+      {token && view === 'mqtt' && isAdminLike && (
+        <MqttEventsPanel token={token} />
       )}
     </div>
   );
