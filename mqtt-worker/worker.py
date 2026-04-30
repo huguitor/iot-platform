@@ -14,10 +14,12 @@ from psycopg2.extras import Json
 import redis
 from dotenv import load_dotenv
 
+
 # ============================================================
 # CARGA DE VARIABLES DE ENTORNO
 # ============================================================
 load_dotenv()
+
 
 # ============================================================
 # CONFIG LOGGING
@@ -29,6 +31,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%SZ",
 )
 
+
 # ============================================================
 # CONFIG MQTT
 # ============================================================
@@ -36,6 +39,7 @@ MQTT_HOST = os.getenv("MQTT_BROKER_HOST", "mosquitto")
 MQTT_PORT = int(os.getenv("MQTT_BROKER_PORT", "1883"))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
+
 
 # ============================================================
 # CONFIG BASE DE DATOS / REDIS
@@ -46,11 +50,13 @@ DB_URL = os.getenv("DATABASE_URL_WORKER") or os.getenv(
 )
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
+
 # ============================================================
 # CONFIG PRESENCIA / OFFLINE
 # ============================================================
 DEVICE_OFFLINE_TIMEOUT_SECONDS = int(os.getenv("DEVICE_OFFLINE_TIMEOUT_SECONDS", "600"))
 OFFLINE_CHECK_INTERVAL_SECONDS = int(os.getenv("OFFLINE_CHECK_INTERVAL_SECONDS", "60"))
+
 
 # ============================================================
 # CLIENTE REDIS
@@ -68,6 +74,7 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+
 def connect_db():
     """
     Abre una conexión nueva a PostgreSQL.
@@ -75,6 +82,7 @@ def connect_db():
     conn = psycopg2.connect(DB_URL)
     conn.autocommit = True
     return conn
+
 
 
 def ensure_connection(conn):
@@ -110,6 +118,7 @@ def ensure_connection(conn):
         return connect_db()
 
 
+
 def safe_json_loads(payload_raw: bytes) -> Optional[Any]:
     """
     Intenta decodificar payload como JSON.
@@ -119,6 +128,7 @@ def safe_json_loads(payload_raw: bytes) -> Optional[Any]:
         return json.loads(payload_raw.decode("utf-8"))
     except Exception:
         return None
+
 
 
 def payload_to_json_compatible(payload: Any) -> Any:
@@ -141,6 +151,7 @@ def payload_to_json_compatible(payload: Any) -> Any:
     return {"raw": str(payload)}
 
 
+
 def parse_device_id_from_topic(topic: str) -> Optional[str]:
     """
     Espera topics del estilo:
@@ -148,6 +159,7 @@ def parse_device_id_from_topic(topic: str) -> Optional[str]:
     iot/devices/{device_id}/state
     iot/devices/{device_id}/status
     iot/devices/{device_id}/response
+    iot/devices/{device_id}/event
     iot/devices/{device_id}/cmd
     """
     parts = topic.split("/")
@@ -171,6 +183,7 @@ def ensure_tables(conn):
     Agrega:
     - mqtt_events
     - audit_logs
+    - access_events
 
     Mejora commands para trazabilidad:
     - dispatched_at
@@ -354,6 +367,56 @@ def ensure_tables(conn):
             """
         )
 
+        # --------------------------------------------------------
+        # TABLA access_events
+        # --------------------------------------------------------
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS access_events (
+                id SERIAL PRIMARY KEY,
+                device_id VARCHAR(255),
+                reader VARCHAR(50),
+                event_type VARCHAR(50),
+                card_uid VARCHAR(100),
+                authorized BOOLEAN,
+                door_opened BOOLEAN,
+                payload JSONB,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            );
+            """
+        )
+
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_access_events_device_created_at
+            ON access_events (device_id, created_at DESC);
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_access_events_reader_created_at
+            ON access_events (reader, created_at DESC);
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_access_events_card_uid
+            ON access_events (card_uid);
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_access_events_event_type
+            ON access_events (event_type);
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_access_events_authorized
+            ON access_events (authorized);
+            """
+        )
+
 
 # ============================================================
 # FUNCIONES DB - OPERATIVAS
@@ -372,6 +435,7 @@ def upsert_device(conn, device_id: str, status: str, last_seen: datetime):
         )
 
 
+
 def update_device_status(conn, device_id: str, status: str):
     with conn.cursor() as cur:
         cur.execute(
@@ -384,6 +448,7 @@ def update_device_status(conn, device_id: str, status: str):
         )
 
 
+
 def insert_telemetry(conn, device_id: str, timestamp: datetime, payload: dict):
     with conn.cursor() as cur:
         cur.execute(
@@ -393,6 +458,7 @@ def insert_telemetry(conn, device_id: str, timestamp: datetime, payload: dict):
             """,
             (device_id, timestamp, Json(payload)),
         )
+
 
 
 def mark_command_dispatched(conn, command_id: int):
@@ -416,6 +482,7 @@ def mark_command_dispatched(conn, command_id: int):
         )
 
 
+
 def mark_command_failed(conn, command_id: int):
     with conn.cursor() as cur:
         cur.execute(
@@ -426,6 +493,7 @@ def mark_command_failed(conn, command_id: int):
             """,
             (command_id,),
         )
+
 
 
 def fetch_pending_commands(conn, limit: int = 50):
@@ -487,6 +555,7 @@ def insert_mqtt_event(
         )
 
 
+
 def insert_audit_log(
     conn,
     *,
@@ -536,6 +605,90 @@ def insert_audit_log(
             ),
         )
 
+
+
+def insert_access_event(
+    conn,
+    *,
+    device_id: Optional[str],
+    reader: Optional[str],
+    event_type: Optional[str],
+    card_uid: Optional[str],
+    authorized: Optional[bool],
+    door_opened: Optional[bool],
+    payload: Any,
+):
+    """
+    Guarda eventos específicos de control de acceso
+    Y actualiza el estado actual del dispositivo (devices).
+
+    Payload esperado:
+    {
+        "event": "access",
+        "reader": "L1",
+        "card_uid": "5033541",
+        "authorized": true,
+        "door_opened": true
+    }
+    """
+    payload_json = payload_to_json_compatible(payload)
+    now = utcnow()
+
+    with conn.cursor() as cur:
+        # ============================================================
+        # INSERT HISTÓRICO
+        # ============================================================
+        cur.execute(
+            """
+            INSERT INTO access_events (
+                device_id,
+                reader,
+                event_type,
+                card_uid,
+                authorized,
+                door_opened,
+                payload,
+                created_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+            """,
+            (
+                device_id,
+                reader,
+                event_type,
+                card_uid,
+                authorized,
+                door_opened,
+                Json(payload_json),
+                now,
+            ),
+        )
+
+        # ============================================================
+        # 🔴 ACTUALIZAR ESTADO ACTUAL (devices)
+        # ============================================================
+        if device_id and isinstance(door_opened, bool):
+            cur.execute(
+                """
+                UPDATE devices
+                SET last_door_opened = %s,
+                    last_door_event_at = %s,
+                    last_door_reader = %s,
+                    last_access_event_type = %s,
+                    last_card_uid = %s,
+                    last_access_authorized = %s
+                WHERE device_id = %s;
+                """,
+                (
+                    door_opened,
+                    now,
+                    reader,
+                    event_type,
+                    card_uid,
+                    authorized if isinstance(authorized, bool) else None,
+                    device_id,
+                ),
+            )
 
 # ============================================================
 # PRESENCIA / HEARTBEAT
@@ -660,6 +813,7 @@ def handle_telemetry(conn, topic: str, payload_raw: bytes):
     logging.info("Telemetry stored for %s", device_id)
 
 
+
 def handle_status(conn, topic: str, payload_raw: bytes):
     status_text = payload_raw.decode("utf-8", errors="replace").strip() or "unknown"
     device_id = parse_device_id_from_topic(topic)
@@ -733,6 +887,146 @@ def handle_status(conn, topic: str, payload_raw: bytes):
     )
 
     logging.info("Status %s for %s", normalized, device_id)
+
+
+
+def handle_event(conn, topic: str, payload_raw: bytes):
+    """
+    Maneja eventos desacoplados del sistema IoT.
+
+    Uso principal actual:
+    - Control de acceso
+
+    Topic esperado:
+    iot/devices/{device_id}/event
+
+    Payload esperado:
+    {
+        "event": "access",
+        "reader": "L1",
+        "card_uid": "5033541",
+        "authorized": true,
+        "door_opened": true
+    }
+    """
+    data = safe_json_loads(payload_raw)
+    device_id = parse_device_id_from_topic(topic)
+
+    if data is None:
+        logging.warning("Invalid JSON event on %s", topic)
+
+        insert_mqtt_event(
+            conn,
+            device_id=device_id,
+            direction="inbound",
+            topic=topic,
+            payload=payload_raw,
+            event_type="mqtt_event_invalid_json_received",
+            processed_ok=False,
+        )
+        insert_audit_log(
+            conn,
+            action_type="mqtt_event_invalid_json_received",
+            device_id=device_id,
+            payload={
+                "topic": topic,
+                "payload": payload_raw.decode("utf-8", errors="replace"),
+            },
+            result="failed",
+        )
+        return
+
+    if not isinstance(data, dict):
+        logging.warning("Unexpected event JSON type on %s: %s", topic, type(data).__name__)
+
+        insert_mqtt_event(
+            conn,
+            device_id=device_id,
+            direction="inbound",
+            topic=topic,
+            payload=data,
+            event_type="mqtt_event_unexpected_payload_type",
+            processed_ok=False,
+        )
+        insert_audit_log(
+            conn,
+            action_type="mqtt_event_unexpected_payload_type",
+            device_id=device_id,
+            payload={"topic": topic, "payload": data},
+            result="failed",
+        )
+        return
+
+    if not device_id:
+        logging.warning("Could not parse device_id from event topic %s", topic)
+
+        insert_mqtt_event(
+            conn,
+            device_id=None,
+            direction="inbound",
+            topic=topic,
+            payload=data,
+            event_type="mqtt_event_topic_parse_failed",
+            processed_ok=False,
+        )
+        insert_audit_log(
+            conn,
+            action_type="mqtt_event_topic_parse_failed",
+            device_id=None,
+            payload={"topic": topic, "payload": data},
+            result="failed",
+        )
+        return
+
+    # Un evento también indica que el dispositivo está vivo.
+    touch_device_presence(conn, device_id, status="online")
+
+    event_name = data.get("event") or data.get("event_type") or "unknown"
+    reader = data.get("reader")
+    card_uid = data.get("card_uid")
+    authorized = data.get("authorized")
+    door_opened = data.get("door_opened")
+
+    # Normalización defensiva: si vienen 0/1 desde Arduino, los convertimos a bool.
+    if isinstance(authorized, int):
+        authorized = bool(authorized)
+    if isinstance(door_opened, int):
+        door_opened = bool(door_opened)
+
+    # Guardado específico para control de acceso.
+    insert_access_event(
+        conn,
+        device_id=device_id,
+        reader=reader,
+        event_type=event_name,
+        card_uid=card_uid,
+        authorized=authorized if isinstance(authorized, bool) else None,
+        door_opened=door_opened if isinstance(door_opened, bool) else None,
+        payload=data,
+    )
+
+    # Trazabilidad MQTT general.
+    insert_mqtt_event(
+        conn,
+        device_id=device_id,
+        direction="inbound",
+        topic=topic,
+        payload=data,
+        event_type="access_event_received" if event_name == "access" else "mqtt_device_event_received",
+        processed_ok=True,
+    )
+
+    # Auditoría general.
+    insert_audit_log(
+        conn,
+        action_type="access_event" if event_name == "access" else "mqtt_device_event_received",
+        device_id=device_id,
+        payload=data,
+        result="success",
+    )
+
+    logging.info("Device event stored for %s: %s", device_id, event_name)
+
 
 
 def handle_response(conn, topic: str, payload_raw: bytes):
@@ -1028,10 +1322,12 @@ def on_connect(client, userdata, flags, rc):
         client.subscribe("iot/devices/+/state")
         client.subscribe("iot/devices/+/status")
         client.subscribe("iot/devices/+/response")
+        client.subscribe("iot/devices/+/event")
 
         logging.info("Subscribed to device topics")
     else:
         logging.error("Failed to connect to MQTT broker: rc=%s", rc)
+
 
 
 def on_message(client, userdata, msg):
@@ -1051,6 +1347,9 @@ def on_message(client, userdata, msg):
 
         elif msg.topic.endswith("/response"):
             handle_response(conn, msg.topic, msg.payload)
+
+        elif msg.topic.endswith("/event"):
+            handle_event(conn, msg.topic, msg.payload)
 
         else:
             device_id = parse_device_id_from_topic(msg.topic)

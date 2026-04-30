@@ -2,43 +2,56 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { fetchDevices, fetchTelemetry, login, sendCommand } from './api';
+
 import DeviceList from './components/DeviceList';
 import DeviceDetail from './components/DeviceDetail';
-import StatusBadge from './components/StatusBadge';
-import TerminalFeed from './components/TerminalFeed';
 import AdminPanel from './components/AdminPanel';
 import AuditPanel from './components/AuditPanel';
 import MqttEventsPanel from './components/MqttEventsPanel';
+
+// Nueva pantalla exclusiva para Control de Acceso
+import AccessControlPage from './pages/AccessControlPage';
 
 export default function App() {
   const [devices, setDevices] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [telemetry, setTelemetry] = useState([]);
+
   const [token, setToken] = useState('');
   const [role, setRole] = useState('user');
+
   const [authError, setAuthError] = useState('');
+
   const [authForm, setAuthForm] = useState({
     username: 'admin',
     password: 'admin123',
   });
+
   const [view, setView] = useState('dashboard');
 
   const isAdminLike = role === 'admin' || role === 'superadmin';
+  const isAccessFullScreen = view === 'access-control';
 
   // ============================================================
-  // DERIVADOS
+  // DISPOSITIVOS ONLINE
   // ============================================================
   const onlineDevices = useMemo(
     () => devices.filter((d) => (d.status || '').toLowerCase() === 'online'),
     [devices]
   );
 
-  const onlineCount = onlineDevices.length;
-
   const selected = useMemo(
     () => onlineDevices.find((d) => d.device_id === selectedId) || null,
     [onlineDevices, selectedId]
   );
+
+  // ============================================================
+  // CAMBIO DE VISTA
+  // ============================================================
+  const switchView = (next) => {
+    setView(next);
+    window.location.hash = next === 'dashboard' ? '' : next;
+  };
 
   // ============================================================
   // LOGOUT
@@ -53,74 +66,6 @@ export default function App() {
     setView('dashboard');
     window.location.hash = '';
   };
-
-  // ============================================================
-  // CARGA DE DISPOSITIVOS
-  // ============================================================
-  const refreshDevices = async () => {
-    try {
-      const list = await fetchDevices(token);
-      setDevices(list);
-
-      const onlyOnline = list.filter(
-        (d) => (d.status || '').toLowerCase() === 'online'
-      );
-
-      setSelectedId((prevSelectedId) => {
-        if (!onlyOnline.length) return null;
-        if (!prevSelectedId) return onlyOnline[0].device_id;
-
-        const stillExistsOnline = onlyOnline.some(
-          (d) => d.device_id === prevSelectedId
-        );
-
-        return stillExistsOnline ? prevSelectedId : onlyOnline[0].device_id;
-      });
-    } catch (err) {
-      console.error('Error refreshing devices:', err);
-    }
-  };
-
-  // ============================================================
-  // CARGA DE TELEMETRÍA
-  // ============================================================
-  const refreshTelemetry = async (deviceId) => {
-    if (!deviceId) return;
-
-    try {
-      const data = await fetchTelemetry(deviceId, token);
-      setTelemetry(data);
-    } catch (err) {
-      console.error('Error refreshing telemetry:', err);
-    }
-  };
-
-  // ============================================================
-  // EFECTO: REFRESH DE DISPOSITIVOS
-  // ============================================================
-  useEffect(() => {
-    if (!token) return;
-
-    refreshDevices();
-    const iv = setInterval(refreshDevices, 10000);
-
-    return () => clearInterval(iv);
-  }, [token]);
-
-  // ============================================================
-  // EFECTO: REFRESH DE TELEMETRÍA DEL DISPOSITIVO SELECCIONADO
-  // ============================================================
-  useEffect(() => {
-    if (!token || !selectedId) {
-      setTelemetry([]);
-      return;
-    }
-
-    refreshTelemetry(selectedId);
-    const iv = setInterval(() => refreshTelemetry(selectedId), 8000);
-
-    return () => clearInterval(iv);
-  }, [selectedId, token]);
 
   // ============================================================
   // LOGIN
@@ -138,125 +83,171 @@ export default function App() {
       setToken(t);
       setRole(r);
     } catch (err) {
-      setAuthError(err?.response?.data?.detail || 'Login failed');
-      setRole('user');
+      console.error(err);
+      setAuthError('Login failed');
       setToken('');
+      setRole('user');
     }
   };
 
   // ============================================================
-  // LECTURA INICIAL DE HASH
+  // CARGA DE DISPOSITIVOS
+  // ============================================================
+  const refreshDevices = async () => {
+    if (!token) return;
+
+    try {
+      const list = await fetchDevices(token);
+      setDevices(list);
+
+      const onlyOnline = list.filter(
+        (d) => (d.status || '').toLowerCase() === 'online'
+      );
+
+      setSelectedId((prev) => {
+        if (!onlyOnline.length) return null;
+        if (!prev) return onlyOnline[0].device_id;
+
+        return onlyOnline.some((d) => d.device_id === prev)
+          ? prev
+          : onlyOnline[0].device_id;
+      });
+    } catch (err) {
+      console.error('Error refreshing devices:', err);
+    }
+  };
+
+  // ============================================================
+  // CARGA DE TELEMETRÍA
+  // ============================================================
+  const refreshTelemetry = async (deviceId) => {
+    if (!token || !deviceId) return;
+
+    try {
+      const data = await fetchTelemetry(deviceId, token);
+      setTelemetry(data);
+    } catch (err) {
+      console.error('Error refreshing telemetry:', err);
+    }
+  };
+
+  // ============================================================
+  // ENVÍO DE COMANDOS
+  // ============================================================
+  const handleSendCommand = async (cmd) => {
+    if (!selectedId || !token) return;
+    return sendCommand(selectedId, cmd, token);
+  };
+
+  // ============================================================
+  // REFRESH AUTOMÁTICO DE DISPOSITIVOS
+  // ============================================================
+  useEffect(() => {
+    if (!token) return;
+
+    refreshDevices();
+    const iv = setInterval(refreshDevices, 10000);
+
+    return () => clearInterval(iv);
+  }, [token]);
+
+  // ============================================================
+  // REFRESH AUTOMÁTICO DE TELEMETRÍA
+  // ============================================================
+  useEffect(() => {
+    if (!token || !selectedId) {
+      setTelemetry([]);
+      return;
+    }
+
+    refreshTelemetry(selectedId);
+    const iv = setInterval(() => refreshTelemetry(selectedId), 8000);
+
+    return () => clearInterval(iv);
+  }, [selectedId, token]);
+
+  // ============================================================
+  // LECTURA INICIAL DEL HASH
   // ============================================================
   useEffect(() => {
     const hash = window.location.hash.replace('#', '');
 
-    if (hash === 'admin' || hash === 'audit' || hash === 'mqtt') {
-      setView(hash);
+    if (
+      hash === 'dashboard' ||
+      hash === 'admin' ||
+      hash === 'audit' ||
+      hash === 'mqtt' ||
+      hash === 'access-control'
+    ) {
+      setView(hash === 'dashboard' ? 'dashboard' : hash);
     } else {
       setView('dashboard');
     }
   }, []);
 
   // ============================================================
-  // CAMBIO DE VISTA
+  // PANTALLA COMPLETA: CONTROL DE ACCESO
   // ============================================================
-  const switchView = (next) => {
-    setView(next);
-    window.location.hash = next === 'dashboard' ? '' : next;
-  };
-
-  // ============================================================
-  // ENVÍO DE COMANDO
-  // ============================================================
-  const handleSendCommand = async (cmd) => {
-    if (!selectedId) return;
-    return sendCommand(selectedId, cmd, token);
-  };
+  if (token && isAccessFullScreen && isAdminLike) {
+    return (
+      <AccessControlPage
+        token={token}
+        username={authForm.username}
+        onBack={() => switchView('dashboard')}
+      />
+    );
+  }
 
   return (
     <div className="page">
       {/* ====================================================== */}
-      {/* TOPBAR */}
+      {/* TOPBAR GENERAL */}
       {/* ====================================================== */}
       <header className="topbar">
         <div className="brand">
-          <p className="eyebrow">Panel IoT</p>
-          <h1>Monitoreo y Comandos</h1>
+          <h1>Panel IoT</h1>
 
-          {token ? (
-            <p className="muted">
-              Sesión:{' '}
-              {role === 'superadmin'
-                ? 'Super Administrador'
-                : role === 'admin'
-                ? 'Administrador'
-                : 'Usuario'}
-            </p>
-          ) : (
-            <p className="muted">Ingresá para ver los dispositivos</p>
-          )}
+          <p className="muted">
+            {token ? `Sesión: ${role}` : 'Sin sesión'}
+          </p>
         </div>
 
         <form className="auth-inline" onSubmit={handleLogin}>
-          <div>
-            <label>Usuario</label>
-            <input
-              className="text-input"
-              value={authForm.username}
-              onChange={(e) =>
-                setAuthForm({ ...authForm, username: e.target.value })
-              }
-            />
-          </div>
+          <input
+            className="text-input"
+            placeholder="Usuario"
+            value={authForm.username}
+            onChange={(e) =>
+              setAuthForm({ ...authForm, username: e.target.value })
+            }
+          />
 
-          <div>
-            <label>Contraseña</label>
-            <input
-              type="password"
-              className="text-input"
-              value={authForm.password}
-              onChange={(e) =>
-                setAuthForm({ ...authForm, password: e.target.value })
-              }
-            />
-          </div>
+          <input
+            type="password"
+            className="text-input"
+            placeholder="Contraseña"
+            value={authForm.password}
+            onChange={(e) =>
+              setAuthForm({ ...authForm, password: e.target.value })
+            }
+          />
 
           <button className="primary" type="submit">
             {token ? 'Refrescar token' : 'Ingresar'}
           </button>
 
           {token && (
-            <button
-              className="ghost"
-              type="button"
-              onClick={handleLogout}
-            >
+            <button className="ghost" type="button" onClick={handleLogout}>
               Cerrar sesión
             </button>
           )}
 
           {authError && <p className="error">{authError}</p>}
-          {token && <p className="muted">Token activo</p>}
         </form>
       </header>
 
       {/* ====================================================== */}
-      {/* HERO SIN LOGIN */}
-      {/* ====================================================== */}
-      {!token && (
-        <section className="hero">
-          <div>
-            <p className="eyebrow">Plataforma IoT</p>
-            <h2>Todo tu parque en un solo lugar.</h2>
-            <p className="muted">
-              Iniciá sesión para ver el tablero en vivo o administrar usuarios.
-            </p>
-          </div>
-        </section>
-      )}
-
-      {/* ====================================================== */}
-      {/* PESTAÑAS DE NAVEGACIÓN */}
+      {/* NAV GENERAL */}
       {/* ====================================================== */}
       {token && (
         <div className="nav-tabs">
@@ -287,8 +278,14 @@ export default function App() {
                 className={`tab ${view === 'mqtt' ? 'active' : ''}`}
                 onClick={() => switchView('mqtt')}
               >
-                <span className="tab-label-desktop">Eventos MQTT</span>
-                <span className="tab-label-mobile">Eventos</span>
+                MQTT
+              </button>
+
+              <button
+                className={`tab ${view === 'access-control' ? 'active' : ''}`}
+                onClick={() => switchView('access-control')}
+              >
+                Control de Acceso
               </button>
             </>
           )}
@@ -299,76 +296,34 @@ export default function App() {
       {/* VISTA DASHBOARD */}
       {/* ====================================================== */}
       {token && view === 'dashboard' && (
-        <>
-          <section className="intro">
-            <p className="muted">
-              Supervisá tus dispositivos, enviá comandos y leé telemetría en segundos.
-            </p>
-          </section>
+        <section className="content">
+          <DeviceList
+            devices={onlineDevices}
+            onSelect={setSelectedId}
+            selectedId={selectedId}
+          />
 
-          <section className="metrics">
-            <div className="metric-card">
-              <p className="eyebrow">En línea</p>
-              <h2>{onlineCount}</h2>
-              <p className="muted">Dispositivos reportando</p>
-            </div>
-
-            <div className="metric-card">
-              <p className="eyebrow">Flota visible</p>
-              <h2>{onlineDevices.length}</h2>
-              <p className="muted">Solo equipos online</p>
-            </div>
-
-            <div className="metric-card">
-              <p className="eyebrow">API</p>
-              <h2>
-                <StatusBadge status={token ? 'online' : 'offline'} />
-              </h2>
-              <p className="muted">Estado del token</p>
-            </div>
-          </section>
-
-          <section className="content">
-            <DeviceList
-              devices={onlineDevices}
-              onSelect={setSelectedId}
-              selectedId={selectedId}
-            />
-
-            <div className="detail-stack">
-              <DeviceDetail
-                device={selected}
-                telemetry={telemetry}
-                onSendCommand={handleSendCommand}
-                token={token}
-                role={role}
-              />
-
-              {isAdminLike && (
-                <TerminalFeed device={selected} telemetry={telemetry} />
-              )}
-            </div>
-          </section>
-        </>
+          <DeviceDetail
+            device={selected}
+            telemetry={telemetry}
+            onSendCommand={handleSendCommand}
+            token={token}
+            role={role}
+          />
+        </section>
       )}
 
       {/* ====================================================== */}
-      {/* VISTA ADMINISTRACIÓN DE USUARIOS */}
+      {/* VISTAS ADMIN */}
       {/* ====================================================== */}
       {token && view === 'admin' && isAdminLike && (
         <AdminPanel token={token} role={role} />
       )}
 
-      {/* ====================================================== */}
-      {/* VISTA AUDITORÍA */}
-      {/* ====================================================== */}
       {token && view === 'audit' && isAdminLike && (
         <AuditPanel token={token} />
       )}
 
-      {/* ====================================================== */}
-      {/* VISTA EVENTOS MQTT */}
-      {/* ====================================================== */}
       {token && view === 'mqtt' && isAdminLike && (
         <MqttEventsPanel token={token} />
       )}

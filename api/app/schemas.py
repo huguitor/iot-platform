@@ -57,9 +57,19 @@ class Device(DeviceBase):
     created_at: Optional[datetime]
     last_seen: Optional[datetime]
 
+    # ============================================================
+    # 🔴 ESTADO ACTUAL CONTROL DE ACCESO (NUEVO)
+    # ============================================================
+    last_door_opened: Optional[bool] = None
+    last_door_event_at: Optional[datetime] = None
+    last_door_reader: Optional[str] = None
+
+    last_access_event_type: Optional[str] = None
+    last_card_uid: Optional[str] = None
+    last_access_authorized: Optional[bool] = None
+
     class Config:
         orm_mode = True
-
 
 # ============================================================
 # TELEMETRY
@@ -303,3 +313,20 @@ class UserSession(BaseModel):
 
     class Config:
         orm_mode = True
+
+# ============================================================
+# ACCESS EVENTS
+# ============================================================
+class AccessEvent(BaseModel):
+   id: int
+   device_id: Optional[str]
+   reader: Optional[str]
+   event_type: Optional[str]
+   card_uid: Optional[str]
+   authorized: Optional[bool]
+   door_opened: Optional[bool]
+   payload: Optional[Any]
+   created_at: datetime
+
+   class Config:
+       orm_mode = True

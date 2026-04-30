@@ -18,6 +18,7 @@ from . import auth
 from .audit import close_session, create_session, log_action, touch_session
 from .database import Base, SessionLocal, engine, get_db
 from .models import (
+    AccessEvent,
     AuditLog,
     Command,
     Device,
@@ -28,6 +29,7 @@ from .models import (
     UserDevicePermission,
 )
 from .schemas import (
+    AccessEvent as AccessEventSchema,
     AuditLog as AuditLogSchema,
     Command as CommandSchema,
     CommandCreate,
@@ -108,11 +110,24 @@ def get_request_user_agent(request: Request) -> Optional[str]:
 
 
 def get_device_status_safe(device_id: str, fallback: Optional[str] = None) -> Optional[str]:
-    try:
-        return redis_client.get(f"device:{device_id}:status") or fallback
-    except Exception:
-        return fallback
+    """
+    Obtiene el estado del dispositivo desde Redis.
 
+    Si Redis falla o no tiene dato:
+    - usa el fallback (normalmente el valor en DB)
+    - nunca rompe la API (fail-safe)
+    """
+    try:
+        value = redis_client.get(f"device:{device_id}:status")
+
+        if value is None:
+            return fallback
+
+        return value
+
+    except Exception:
+        # Redis caído o error → no rompemos la API
+        return fallback
 
 def mark_session_activity(db: Session, current_user: User):
     try:
@@ -566,9 +581,52 @@ def on_startup():
     Al iniciar la API:
     - crea tablas si no existen
     - asegura usuario admin inicial
+    - agrega columnas nuevas para control de acceso (si no existen)
     """
     Base.metadata.create_all(bind=engine)
 
+    # ============================================================
+    # 🔴 MIGRACIONES LIVIANAS (sin Alembic)
+    # ============================================================
+    with engine.begin() as conn:
+        conn.execute(text("""
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_door_opened BOOLEAN;
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_door_event_at TIMESTAMPTZ;
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_door_reader VARCHAR(50);
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_access_event_type VARCHAR(50);
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_card_uid VARCHAR(100);
+        """))
+
+        conn.execute(text("""
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_access_authorized BOOLEAN;
+        """))
+
+        conn.execute(text("""
+            CREATE INDEX IF NOT EXISTS idx_devices_last_door_event_at
+            ON devices (last_door_event_at DESC);
+        """))
+
+    # ============================================================
+    # ADMIN INICIAL
+    # ============================================================
     with SessionLocal() as db:
         auth.ensure_admin_user(db)
 
@@ -1481,6 +1539,93 @@ def get_audit_logs(
     logs = db.execute(query).scalars().all()
     return logs
 
+# ============================================================
+# CONTROL DE ACCESO - EVENTOS
+# ============================================================
+@app.get("/api/access/events", response_model=List[AccessEventSchema])
+def get_access_events(
+   device_id: Optional[str] = Query(None),
+   reader: Optional[str] = Query(None),
+   card_uid: Optional[str] = Query(None),
+   event_type: Optional[str] = Query(None),
+   authorized: Optional[bool] = Query(None),
+   date_from: Optional[int] = Query(None, description="Unix epoch seconds desde"),
+   date_to: Optional[int] = Query(None, description="Unix epoch seconds hasta"),
+   limit: int = Query(200, ge=1, le=1000),
+   db: Session = Depends(get_db),
+   current_user: User = Depends(auth.get_current_user),
+):
+   """
+   Lista eventos de control de acceso.
+
+   Permisos:
+   - superadmin/admin: ven todos los eventos.
+   - user: solo ve eventos de dispositivos con can_read=True.
+   """
+   mark_session_activity(db, current_user)
+
+   query = select(AccessEvent)
+
+   # ----------------------------
+   # Filtro por permisos
+   # ----------------------------
+   if is_admin_like(current_user):
+       pass
+   else:
+       query = (
+           query
+           .join(
+               UserDevicePermission,
+               AccessEvent.device_id == UserDevicePermission.device_id,
+           )
+           .where(
+               UserDevicePermission.user_id == current_user.id,
+               UserDevicePermission.can_read.is_(True),
+           )
+       )
+
+   # ----------------------------
+   # Filtros opcionales
+   # ----------------------------
+   if device_id:
+       device_id = validate_device_id(device_id)
+
+       if not is_admin_like(current_user):
+           if not user_can_read_device(db, current_user.id, device_id):
+               raise HTTPException(
+                   status_code=status.HTTP_403_FORBIDDEN,
+                   detail="Not authorized to view access events for this device",
+               )
+
+       query = query.where(AccessEvent.device_id == device_id)
+
+   if reader:
+       query = query.where(AccessEvent.reader == reader)
+
+   if card_uid:
+       query = query.where(AccessEvent.card_uid == card_uid)
+
+   if event_type:
+       query = query.where(AccessEvent.event_type == event_type)
+
+   if authorized is not None:
+       query = query.where(AccessEvent.authorized.is_(authorized))
+
+   if date_from is not None:
+       query = query.where(
+           AccessEvent.created_at >= datetime.fromtimestamp(date_from, tz=timezone.utc)
+       )
+
+   if date_to is not None:
+       query = query.where(
+           AccessEvent.created_at <= datetime.fromtimestamp(date_to, tz=timezone.utc)
+       )
+
+   query = query.order_by(AccessEvent.created_at.desc()).limit(limit)
+
+   rows = db.execute(query).scalars().all()
+
+   return rows
 
 # ============================================================
 # HISTÓRICO MQTT

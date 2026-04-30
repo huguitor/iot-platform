@@ -31,10 +31,23 @@ class Device(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     last_seen = Column(DateTime(timezone=True), index=True)
 
+    # ============================================================
+    # 🔴 ESTADO ACTUAL DE CONTROL DE ACCESO (NUEVO)
+    # ============================================================
+    last_door_opened = Column(Boolean, nullable=True)  # True=abierta, False=cerrada
+    last_door_event_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_door_reader = Column(String(50), nullable=True)
+
+    last_access_event_type = Column(String(50), nullable=True)  # access / door_state
+    last_card_uid = Column(String(100), nullable=True)
+    last_access_authorized = Column(Boolean, nullable=True)
+
+    # ============================================================
+    # RELACIONES
+    # ============================================================
     telemetry = relationship("Telemetry", back_populates="device")
     commands = relationship("Command", back_populates="device")
     permissions = relationship("UserDevicePermission", back_populates="device")
-
 
 # ============================================================
 # TELEMETRY
@@ -234,9 +247,29 @@ class IntegrationAPIKey(Base):
     created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
 
+# ============================================================
+# ACCESS EVENTS
+# ============================================================
+class AccessEvent(Base):
+   __tablename__ = "access_events"
+
+   id = Column(Integer, primary_key=True, index=True)
+
+   device_id = Column(String(255), nullable=True, index=True)
+   reader = Column(String(50), nullable=True, index=True)
+   event_type = Column(String(50), nullable=True, index=True)
+
+   card_uid = Column(String(100), nullable=True, index=True)
+   authorized = Column(Boolean, nullable=True, index=True)
+   door_opened = Column(Boolean, nullable=True)
+
+   payload = Column(JSONB, nullable=True)
+   created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
 
 # ============================================================
 # ÍNDICES ADICIONALES (opcional pero recomendado)
 # ============================================================
 Index("idx_telemetry_device_time", Telemetry.device_id, Telemetry.timestamp.desc())
 Index("idx_commands_device_status", Command.device_id, Command.status)
+Index("idx_access_events_device_created_at", AccessEvent.device_id, AccessEvent.created_at.desc())

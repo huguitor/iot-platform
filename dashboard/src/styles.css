@@ -383,7 +383,7 @@ h4 {
   margin: 14px 0 18px;
 }
 
-.scada-io > div {
+.scada-io>div {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.015), transparent), var(--panel-2);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -820,6 +820,7 @@ h4 {
     grid-template-columns: 1fr 1fr;
   }
 }
+
 /* ===== MQTT EVENTS PANEL ===== */
 
 .mqtt-filters {
@@ -975,4 +976,98 @@ h4 {
   .mqtt-detail-btn {
     width: 100%;
   }
+}
+
+/* ===== ACCESS FULLSCREEN ===== */
+
+.access-fullscreen {
+  padding: 10px;
+}
+
+.access-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  font-weight: 700;
+}
+
+/* ===== ACCESS TABLE - ESTILO EXCEL ===== */
+
+.access-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #020617;
+}
+
+.access-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 920px;
+  font-size: 14px;
+}
+
+.access-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #0f172a;
+  color: #e5e7eb;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid #334155;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.access-table td {
+  padding: 9px 12px;
+  border: 1px solid #1e293b;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.access-table tbody tr:nth-child(even) {
+  background: rgba(15, 23, 42, 0.75);
+}
+
+.access-table tbody tr:nth-child(odd) {
+  background: rgba(2, 6, 23, 0.75);
+}
+
+.access-table tbody tr:hover {
+  background: rgba(14, 165, 233, 0.12);
+}
+
+.access-device {
+  font-weight: 700;
+  color: #f8fafc;
+}
+
+.access-center {
+  text-align: center;
+  font-weight: 700;
+}
+
+.access-door {
+  font-weight: 700;
+}
+
+.access-empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 18px;
+}
+
+.access-section-title {
+  margin: 22px 0 10px;
+  font-size: 18px;
+  font-weight: 800;
+  color: #f8fafc;
+}
+
+.access-table-wrap+.access-section-title {
+  margin-top: 30px;
 }

@@ -208,4 +208,27 @@ export async function fetchMqttEvents(token, filters = {}) {
   });
 
   return res.data;
+  
+}// ============================================================
+// CONTROL DE ACCESO
+// ============================================================
+export async function fetchAccessEvents(token, filters = {}) {
+  const params = {};
+
+  if (filters.device_id) params.device_id = filters.device_id;
+  if (filters.reader) params.reader = filters.reader;
+  if (filters.card_uid) params.card_uid = filters.card_uid;
+  if (filters.event_type) params.event_type = filters.event_type;
+  if (filters.authorized !== undefined) params.authorized = filters.authorized;
+  if (filters.date_from) params.date_from = filters.date_from;
+  if (filters.date_to) params.date_to = filters.date_to;
+
+  params.limit = filters.limit || 200;
+
+  const res = await api.get('/access/events', {
+    params,
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  return res.data;
 }
