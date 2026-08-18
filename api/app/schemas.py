@@ -187,6 +187,8 @@ class UserBase(BaseModel):
     username: str
     role: str = "user"
     is_active: Optional[bool] = True
+    can_access_control: bool = False
+    can_access_monitoring: bool = True
 
     @validator("username")
     def validate_username(cls, v):
@@ -253,6 +255,11 @@ class Permission(PermissionBase):
 
 class UserWithPermissions(User):
     permissions: List[Permission] = Field(default_factory=list)
+
+
+class ModuleAccessUpdate(BaseModel):
+    can_access_control: bool
+    can_access_monitoring: bool
 
 
 # ============================================================

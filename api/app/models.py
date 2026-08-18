@@ -118,6 +118,11 @@ class User(Base):
 
     role = Column(String(50), default="user", index=True)
 
+    # Permisos de entrada a módulos. Los permisos por dispositivo siguen
+    # representados por UserDevicePermission.
+    can_access_control = Column(Boolean, default=False, nullable=False)
+    can_access_monitoring = Column(Boolean, default=True, nullable=False)
+
     created_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())

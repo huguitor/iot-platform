@@ -9,6 +9,7 @@ import {
   fetchUsers,
   getApiErrorMessage,
   updateUserChannel,
+  updateModuleAccess,
   upsertPermission,
 } from '../api';
 
@@ -22,6 +23,8 @@ export default function AdminPanel({ token, role }) {
     username: '',
     password: '',
     role: 'user',
+    can_access_control: false,
+    can_access_monitoring: true,
   });
 
   const [permForms, setPermForms] = useState({});
@@ -64,11 +67,19 @@ export default function AdminPanel({ token, role }) {
       username: newUser.username.trim(),
       password: newUser.password,
       role: newUser.role,
+      can_access_control: newUser.can_access_control,
+      can_access_monitoring: newUser.can_access_monitoring,
     };
 
     try {
       await createUser(payload, token);
-      setNewUser({ username: '', password: '', role: 'user' });
+      setNewUser({
+        username: '',
+        password: '',
+        role: 'user',
+        can_access_control: false,
+        can_access_monitoring: true,
+      });
       setMessage('Usuario creado');
       await loadUsers();
     } catch (err) {
@@ -87,6 +98,27 @@ export default function AdminPanel({ token, role }) {
         ...patch,
       },
     }));
+  };
+
+  const handleModuleAccess = async (user, field, value) => {
+    setError('');
+    setMessage('');
+    try {
+      await updateModuleAccess(
+        user.id,
+        {
+          can_access_control:
+            field === 'can_access_control' ? value : user.can_access_control,
+          can_access_monitoring:
+            field === 'can_access_monitoring' ? value : user.can_access_monitoring,
+        },
+        token
+      );
+      setMessage('Acceso a módulos actualizado');
+      await loadUsers();
+    } catch (err) {
+      setError(getApiErrorMessage(err, 'No se pudo actualizar el acceso a módulos'));
+    }
   };
 
   const handlePermission = async (userId, e) => {
@@ -241,6 +273,26 @@ export default function AdminPanel({ token, role }) {
               />
             </label>
 
+            <div className="stack sm">
+              <span>Módulos habilitados</span>
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={newUser.can_access_control}
+                  onChange={(e) => setNewUser({ ...newUser, can_access_control: e.target.checked })}
+                />
+                <span>Control de Acceso</span>
+              </label>
+              <label className="chk">
+                <input
+                  type="checkbox"
+                  checked={newUser.can_access_monitoring}
+                  onChange={(e) => setNewUser({ ...newUser, can_access_monitoring: e.target.checked })}
+                />
+                <span>Monitoreo IoT</span>
+              </label>
+            </div>
+
             <label className="stack sm">
               <span>Password</span>
               <input
@@ -309,6 +361,32 @@ export default function AdminPanel({ token, role }) {
                       {p.can_write ? 'W' : ''}
                     </span>
                   ))}
+                </div>
+
+                <div className="module-access-row">
+                  <strong>Acceso a módulos</strong>
+                  {u.role === 'admin' || u.role === 'superadmin' ? (
+                    <span className="muted">Acceso global por rol</span>
+                  ) : (
+                    <>
+                      <label className="chk">
+                        <input
+                          type="checkbox"
+                          checked={u.can_access_control}
+                          onChange={(e) => handleModuleAccess(u, 'can_access_control', e.target.checked)}
+                        />
+                        <span>Control de Acceso</span>
+                      </label>
+                      <label className="chk">
+                        <input
+                          type="checkbox"
+                          checked={u.can_access_monitoring}
+                          onChange={(e) => handleModuleAccess(u, 'can_access_monitoring', e.target.checked)}
+                        />
+                        <span>Monitoreo IoT</span>
+                      </label>
+                    </>
+                  )}
                 </div>
 
                 <form className="perm-form" onSubmit={(e) => handlePermission(u.id, e)}>

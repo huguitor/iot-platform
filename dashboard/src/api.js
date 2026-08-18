@@ -52,17 +52,14 @@ export async function login(username, password) {
 
   const res = await api.post('/auth/token', params);
 
-  const token = res.data.access_token;
-  let role = 'user';
+  return { token: res.data.access_token };
+}
 
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    role = payload.role || 'user';
-  } catch (e) {
-    // Si falla el decode del JWT, dejamos rol user por defecto
-  }
-
-  return { token, role };
+export async function fetchCurrentUser(token) {
+  const res = await api.get('/auth/me', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  return res.data;
 }
 
 // ============================================================
@@ -126,6 +123,13 @@ export async function upsertPermission(userId, payload, token) {
     headers: { Authorization: `Bearer ${token}` },
   });
 
+  return res.data;
+}
+
+export async function updateModuleAccess(userId, payload, token) {
+  const res = await api.put(`/admin/users/${userId}/modules`, payload, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   return res.data;
 }
 

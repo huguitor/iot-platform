@@ -37,6 +37,7 @@ from .schemas import (
     Device as DeviceSchema,
     IntegrationChatRequest,
     IntegrationChatResponse,
+    ModuleAccessUpdate,
     Permission as PermissionSchema,
     PermissionBase,
     Telemetry as TelemetrySchema,
@@ -733,13 +734,28 @@ def logout(
     return {"detail": "Logged out"}
 
 
+@app.get("/api/auth/me", response_model=UserSchema)
+def get_authenticated_user(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.get_current_user),
+):
+    mark_session_activity(db, current_user)
+    module_access = auth.get_effective_module_access(current_user)
+    return UserSchema.from_orm(current_user).copy(
+        update={
+            "can_access_control": module_access["access_control"],
+            "can_access_monitoring": module_access["monitoring"],
+        }
+    )
+
+
 # ============================================================
 # LISTAR DISPOSITIVOS
 # ============================================================
 @app.get("/api/devices", response_model=List[DeviceSchema])
 def list_devices(
     db: Session = Depends(get_db),
-    current_user: User = Depends(auth.get_current_user),
+    current_user: User = Depends(auth.require_any_module),
 ):
     """
     - superadmin/admin: ven todos
@@ -784,7 +800,7 @@ def list_devices(
 def get_device(
     device_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(auth.get_current_user),
+    current_user: User = Depends(auth.require_any_module),
 ):
     mark_session_activity(db, current_user)
     device_id = validate_device_id(device_id)
@@ -828,7 +844,7 @@ def get_telemetry(
     end: Optional[int] = Query(None, description="Unix epoch seconds to"),
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
-    current_user: User = Depends(auth.get_current_user),
+    current_user: User = Depends(auth.require_module("monitoring")),
 ):
     mark_session_activity(db, current_user)
     device_id = validate_device_id(device_id)
@@ -889,7 +905,7 @@ def post_command(
     device_id: str,
     body: CommandCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(auth.get_current_user),
+    current_user: User = Depends(auth.require_module("monitoring")),
 ):
     mark_session_activity(db, current_user)
     device_id = validate_device_id(device_id)
@@ -1010,6 +1026,8 @@ def create_user(
         role=requested_role,
         created_by_user_id=current_user.id,
         is_active=body.is_active if body.is_active is not None else True,
+        can_access_control=body.can_access_control,
+        can_access_monitoring=body.can_access_monitoring,
     )
     db.add(user)
     db.commit()
@@ -1137,6 +1155,48 @@ def upsert_permission(
     )
 
     return PermissionSchema.from_orm(permission)
+
+
+@app.put("/api/admin/users/{user_id}/modules", response_model=UserSchema)
+def update_module_access(
+    user_id: int,
+    body: ModuleAccessUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(auth.get_current_user),
+):
+    mark_session_activity(db, current_user)
+    current_user = require_admin_like(current_user)
+
+    user = db.execute(select(User).where(User.id == user_id)).scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not can_manage_user(current_user, user):
+        raise HTTPException(
+            status_code=403,
+            detail="You are not allowed to manage this user",
+        )
+
+    user.can_access_control = body.can_access_control
+    user.can_access_monitoring = body.can_access_monitoring
+    db.commit()
+    db.refresh(user)
+
+    log_action(
+        db,
+        user=current_user,
+        action_type="module_access_updated",
+        payload={
+            "target_user_id": user.id,
+            "target_username": user.username,
+            "can_access_control": user.can_access_control,
+            "can_access_monitoring": user.can_access_monitoring,
+        },
+        result="success",
+        ip=get_request_ip(request),
+        user_agent=get_request_user_agent(request),
+    )
+    return UserSchema.from_orm(user)
 
 
 # ============================================================
@@ -1561,7 +1621,7 @@ def get_access_events(
    date_to: Optional[int] = Query(None, description="Unix epoch seconds hasta"),
    limit: int = Query(200, ge=1, le=1000),
    db: Session = Depends(get_db),
-   current_user: User = Depends(auth.get_current_user),
+   current_user: User = Depends(auth.require_module("access_control")),
 ):
    """
    Lista eventos de control de acceso.

@@ -22,6 +22,11 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRES_MINUTES", "60"))
 ADMIN_USER = os.getenv("API_ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.getenv("API_ADMIN_PASSWORD", "admin123")
 
+MODULE_ACCESS_FIELDS = {
+    "access_control": "can_access_control",
+    "monitoring": "can_access_monitoring",
+}
+
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token")
 pwd_context = CryptContext(
     schemes=["bcrypt_sha256", "pbkdf2_sha256"],
@@ -134,6 +139,41 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
 
+def get_effective_module_access(user: User) -> dict:
+    """Calcula permisos efectivos de entrada a los módulos funcionales."""
+    if user.role in {"admin", "superadmin"}:
+        return {"access_control": True, "monitoring": True}
+
+    return {
+        "access_control": bool(user.can_access_control),
+        "monitoring": bool(user.can_access_monitoring),
+    }
+
+
+def require_module(module_name: str):
+    if module_name not in MODULE_ACCESS_FIELDS:
+        raise ValueError(f"Unknown module: {module_name}")
+
+    def dependency(current_user: User = Depends(get_current_user)) -> User:
+        if not get_effective_module_access(current_user)[module_name]:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access to module '{module_name}' is not enabled",
+            )
+        return current_user
+
+    return dependency
+
+
+def require_any_module(current_user: User = Depends(get_current_user)) -> User:
+    if not any(get_effective_module_access(current_user).values()):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No platform modules are enabled for this user",
+        )
+    return current_user
+
+
 # ============================================================
 # TOKEN RESPONSE
 # ============================================================
@@ -179,6 +219,8 @@ def ensure_admin_user(db: Session):
         hashed_password=get_password_hash(ADMIN_PASSWORD),
         role="admin",
         is_active=True,
+        can_access_control=True,
+        can_access_monitoring=True,
     )
 
     db.add(admin_user)

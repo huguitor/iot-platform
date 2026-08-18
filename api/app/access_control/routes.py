@@ -11,7 +11,9 @@ from ..models import User
 
 from . import schemas, service
 
-router = APIRouter()
+router = APIRouter(
+    dependencies=[Depends(auth.require_module("access_control"))],
+)
 
 
 # ============================================================
