@@ -41,6 +41,22 @@ class Device(Base):
     last_access_event_type = Column(String(50), nullable=True)  # access / door_state
     last_card_uid = Column(String(100), nullable=True)
     last_access_authorized = Column(Boolean, nullable=True)
+    # ============================================================
+# 🔴 ESTADO ACTUAL DE CONTROL DE ACCESO (NUEVO)
+# ============================================================
+    last_door_opened = Column(Boolean, nullable=True)
+    last_door_event_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_door_reader = Column(String(50), nullable=True)
+
+    last_access_event_type = Column(String(50), nullable=True)
+    last_card_uid = Column(String(100), nullable=True)
+    last_access_authorized = Column(Boolean, nullable=True)
+
+    # ============================================================
+    # 🔴 SENSOR MAGNÉTICO REAL
+    # ============================================================
+    last_door_sensor_state = Column(String(50), nullable=True)
+    last_door_sensor_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
     # ============================================================
     # RELACIONES

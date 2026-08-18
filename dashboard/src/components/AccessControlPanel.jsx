@@ -1,9 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchAccessEvents, fetchDevices } from '../api';
 
 // ============================================================
 // HELPERS
 // ============================================================
+
+/**
+ * Convierte un string datetime-local a Unix timestamp (segundos).
+ * Retorna undefined si el valor es inválido o vacío.
+ */
 function toUnixTimestamp(value) {
   if (!value) return undefined;
 
@@ -14,6 +19,10 @@ function toUnixTimestamp(value) {
   return Math.floor(date.getTime() / 1000);
 }
 
+/**
+ * Formatea una fecha/hora en locale es-AR.
+ * Retorna '-' si el valor es inválido o vacío.
+ */
 function formatDateTime(value) {
   if (!value) return '-';
 
@@ -29,34 +38,124 @@ function formatDateTime(value) {
 }
 
 // ============================================================
+// RESULTADO VISUAL DEL EVENTO
+// Mapea event_type + payload a una cadena legible con ícono.
+// ============================================================
+function buildVisualResult(event) {
+  const payload = event.payload || {};
+  const eventType = event.event_type;
+
+  // ----------------------------------------------------------
+  // ACCESS
+  // ----------------------------------------------------------
+  if (eventType === 'access') {
+    if (event.authorized === true) return '✔ Acceso autorizado';
+    if (event.authorized === false) return '✖ Acceso denegado';
+    return '⚪ Evento access';
+  }
+
+  // ----------------------------------------------------------
+  // BUTTON
+  // ----------------------------------------------------------
+  if (eventType === 'button') {
+    return '✔ Apertura por pulsador';
+  }
+
+  // ----------------------------------------------------------
+  // DOOR
+  // ----------------------------------------------------------
+  if (eventType === 'door') {
+    const state = payload.state;
+    if (state === 'OPEN') return '🔴 Puerta abierta';
+    if (state === 'CLOSED') return '🟢 Puerta cerrada';
+    return '⚪ Estado puerta desconocido';
+  }
+
+  // ----------------------------------------------------------
+  // MODE
+  // ----------------------------------------------------------
+  if (eventType === 'mode') {
+    const mode = payload.mode;
+    if (mode === 'PROGRAM') return '🟡 Modo programación habilitado';
+    if (mode === 'READ:MANUAL') return '⚪ Modo lectura habilitado';
+    if (mode === 'READ:TIMEOUT') return '⚪ Lectura finalizada por timeout';
+    return `⚪ Mode ${mode || '-'}`;
+  }
+
+  // ----------------------------------------------------------
+  // ENROLL
+  // ----------------------------------------------------------
+  if (eventType === 'enroll') {
+    const result = payload.result;
+    if (result === 'OK') return '✔ Tarjeta registrada';
+    if (result === 'EXISTS') return '⚠ Tarjeta duplicada';
+    if (result === 'FULL') return '⚠ Memoria llena';
+    return `⚪ Enroll ${result || '-'}`;
+  }
+
+  // ----------------------------------------------------------
+  // DELETE
+  // ----------------------------------------------------------
+  if (eventType === 'delete') {
+    const result = payload.result;
+    if (result === 'OK') return '✔ Tarjeta eliminada';
+    if (result === 'NOT_FOUND') return '⚠ Tarjeta inexistente';
+    if (result === 'FIXED') return '⚠ Tarjeta protegida';
+    return `⚪ Delete ${result || '-'}`;
+  }
+
+  // ----------------------------------------------------------
+  // ERROR
+  // ----------------------------------------------------------
+  if (eventType === 'error') {
+    const err = payload.error || 'UNKNOWN';
+    return `⚠ Error ${err}`;
+  }
+
+  // ----------------------------------------------------------
+  // RESET
+  // ----------------------------------------------------------
+  if (eventType === 'reset') {
+    return '⚠ Memoria reiniciada';
+  }
+
+  // ----------------------------------------------------------
+  // LIST
+  // ----------------------------------------------------------
+  if (eventType === 'list') {
+    return '📋 Lectura de tarjetas';
+  }
+
+  return `⚪ ${eventType || 'Evento desconocido'}`;
+}
+
+// ============================================================
 // ESTADO ACTUAL DE PUERTA
-// Usa el estado persistente que viene desde devices.
-// NO calcula el estado desde el histórico.
+// Lee el estado persistido en el objeto device, NO lo calcula
+// desde el histórico de eventos.
 // ============================================================
 function getDoorState(device) {
-  if (
-    !device ||
-    device.last_door_opened === null ||
-    device.last_door_opened === undefined
-  ) {
-    return '⚪ Sin dato';
-  }
+  if (!device) return '⚪ Sin dato';
 
-  const lastEventAt = device.last_door_event_at
-    ? new Date(device.last_door_event_at).getTime()
+  const sensorState = device.last_door_sensor_state;
+
+  if (!sensorState) return '⚪ Sin sensor';
+
+  const lastEventAt = device.last_door_sensor_at
+    ? new Date(device.last_door_sensor_at).getTime()
     : null;
 
-  if (!lastEventAt || Number.isNaN(lastEventAt)) {
-    return '⚪ Sin dato';
-  }
+  if (!lastEventAt || Number.isNaN(lastEventAt)) return '⚪ Sin dato';
 
   const diffMinutes = (Date.now() - lastEventAt) / 1000 / 60;
 
-  if (diffMinutes > 5) {
-    return '⚪ Desactualizado';
-  }
+  // Más de 5 minutos sin actualización → dato obsoleto
+  if (diffMinutes > 5) return '⚪ Desactualizado';
 
-  return device.last_door_opened ? '🔴 Abierta' : '🟢 Cerrada';
+  if (sensorState === 'open') return '🔴 Abierta';
+  if (sensorState === 'closed') return '🟢 Cerrada';
+
+  return `⚪ ${sensorState}`;
 }
 
 // ============================================================
@@ -65,7 +164,6 @@ function getDoorState(device) {
 export default function AccessControlPanel({ token }) {
   const [events, setEvents] = useState([]);
   const [devices, setDevices] = useState([]);
-
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -79,12 +177,15 @@ export default function AccessControlPanel({ token }) {
     limit: 200,
   });
 
-  // ============================================================
-  // CARGA DE DATOS
-  // - access_events: histórico auditable
-  // - devices: estado actual persistido
-  // ============================================================
-  const loadData = async () => {
+  // ----------------------------------------------------------
+  // loadData memoizada con useCallback.
+  // Se regenera solo cuando cambian token o filters, lo que
+  // hace que el useEffect del intervalo detecte el cambio,
+  // limpie el intervalo anterior y arranque uno nuevo con la
+  // función actualizada → el auto-refresh siempre usa los
+  // filtros vigentes sin necesitar refs manuales.
+  // ----------------------------------------------------------
+  const loadData = useCallback(async () => {
     if (!token) return;
 
     setLoading(true);
@@ -115,43 +216,49 @@ export default function AccessControlPanel({ token }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [token, filters]);
 
-  // Carga inicial
+  // ----------------------------------------------------------
+  // Carga inicial + auto-refresh cada 5 s.
+  // [token, loadData] como deps: cuando loadData cambia (por
+  // cambio de token o filters) el efecto se re-ejecuta,
+  // limpia el intervalo viejo y crea uno nuevo actualizado.
+  // ----------------------------------------------------------
   useEffect(() => {
     if (!token) return;
+
     loadData();
-  }, [token]);
+
+    const intervalId = window.setInterval(() => {
+      loadData();
+    }, 5000);
+
+    return () => window.clearInterval(intervalId);
+  }, [token, loadData]);
 
   // ============================================================
   // TABLA 1: ESTADO ACTUAL
-  // Fuente: devices
-  // Usa:
-  // - last_door_opened
-  // - last_door_event_at
-  // - last_door_reader
-  // - last_card_uid
-  // - last_access_authorized
+  // Fuente: devices (estado persistido en backend)
   // ============================================================
   const currentStateRows = useMemo(() => {
-    return devices.map((d) => {
-      const state = getDoorState(d);
-
-      return {
+    return devices
+      .filter(
+        (d) =>
+          d.last_door_sensor_state !== null &&
+          d.last_door_sensor_state !== undefined
+      )
+      .map((d) => ({
         id: d.device_id,
-        created_at: d.last_door_event_at,
+        created_at: d.last_door_sensor_at,
         device_id: d.device_id,
         reader: d.last_door_reader || '-',
-        card_uid: d.last_card_uid || '-',
-        authorized: d.last_access_authorized,
-        door_label: state,
-      };
-    });
+        door_label: getDoorState(d),
+      }));
   }, [devices]);
 
   // ============================================================
   // TABLA 2: HISTÓRICO DE ACCESOS
-  // Fuente: access_events
+  // Fuente: access_events (log auditable)
   // ============================================================
   const historyRows = useMemo(() => {
     return events.map((e) => ({
@@ -159,25 +266,21 @@ export default function AccessControlPanel({ token }) {
       created_at: e.created_at,
       device_id: e.device_id,
       reader: e.reader,
-      card_uid: e.card_uid,
-      authorized: e.authorized,
-      door_label:
-        e.door_opened === true
-          ? '🔴 Abierta'
-          : e.door_opened === false
-            ? '🟢 Cerrada'
-            : '⚪ Sin dato',
+      event_type: e.event_type,
+      card_uid: e.card_uid || '-',
+      visual_result: buildVisualResult(e),
     }));
   }, [events]);
 
+  // ============================================================
+  // RENDER
+  // ============================================================
   return (
     <section className="audit-panel">
       <div className="audit-header">
         <div>
           <p className="eyebrow">Control de Acceso</p>
-
           <h2>Estado actual e histórico de puertas</h2>
-
           <p className="muted">
             Estado persistido en backend + histórico auditable de accesos
           </p>
@@ -189,7 +292,7 @@ export default function AccessControlPanel({ token }) {
       </div>
 
       {/* ====================================================== */}
-      {/* FILTROS DEL HISTÓRICO */}
+      {/* FILTROS DEL HISTÓRICO                                   */}
       {/* ====================================================== */}
       <div className="mqtt-filters">
         <input
@@ -253,7 +356,8 @@ export default function AccessControlPanel({ token }) {
       {error && <p className="error">{error}</p>}
 
       {/* ====================================================== */}
-      {/* TABLA 1 - ESTADO ACTUAL */}
+      {/* TABLA 1 — ESTADO ACTUAL                                 */}
+      {/* 4 columnas → colSpan="4"                               */}
       {/* ====================================================== */}
       <h3 className="access-section-title">Estado actual de puertas</h3>
 
@@ -261,19 +365,17 @@ export default function AccessControlPanel({ token }) {
         <table className="access-table">
           <thead>
             <tr>
-              <th>Dispositivo</th>
-              <th>Lector</th>
-              <th>Última tarjeta</th>
-              <th>Autorizado</th>
-              <th>Puerta</th>
-              <th>Último evento</th>
+              <th>Device ID</th>
+              <th>Reader</th>
+              <th>Estado físico</th>
+              <th>Última actualización</th>
             </tr>
           </thead>
 
           <tbody>
             {currentStateRows.length === 0 ? (
               <tr>
-                <td className="access-empty" colSpan="6">
+                <td className="access-empty" colSpan="4">
                   {loading ? 'Cargando...' : 'Sin datos'}
                 </td>
               </tr>
@@ -282,15 +384,7 @@ export default function AccessControlPanel({ token }) {
                 <tr key={e.id}>
                   <td className="access-device">{e.device_id || '-'}</td>
                   <td className="access-center">{e.reader || '-'}</td>
-                  <td>{e.card_uid || '-'}</td>
-                  <td className="access-center">
-                    {e.authorized === true
-                      ? '✔'
-                      : e.authorized === false
-                        ? '✖'
-                        : '-'}
-                  </td>
-                  <td className="access-door">{e.door_label || '-'}</td>
+                  <td className="access-door">  {e.door_label || '-'}</td>
                   <td>{formatDateTime(e.created_at)}</td>
                 </tr>
               ))
@@ -300,7 +394,8 @@ export default function AccessControlPanel({ token }) {
       </div>
 
       {/* ====================================================== */}
-      {/* TABLA 2 - HISTÓRICO */}
+      {/* TABLA 2 — HISTÓRICO                                     */}
+      {/* 6 columnas → colSpan="6"                               */}
       {/* ====================================================== */}
       <h3 className="access-section-title">Histórico de accesos</h3>
 
@@ -308,12 +403,12 @@ export default function AccessControlPanel({ token }) {
         <table className="access-table">
           <thead>
             <tr>
-              <th>Fecha</th>
-              <th>Dispositivo</th>
-              <th>Lector</th>
-              <th>Tarjeta</th>
-              <th>Autorizado</th>
-              <th>Puerta</th>
+              <th>Fecha servidor</th>
+              <th>Device ID</th>
+              <th>Reader</th>
+              <th>Event type</th>
+              <th>Card UID</th>
+              <th>Resultado visual</th>
             </tr>
           </thead>
 
@@ -330,15 +425,9 @@ export default function AccessControlPanel({ token }) {
                   <td>{formatDateTime(e.created_at)}</td>
                   <td className="access-device">{e.device_id || '-'}</td>
                   <td className="access-center">{e.reader || '-'}</td>
+                  <td className="access-center">{e.event_type || '-'}</td>
                   <td>{e.card_uid || '-'}</td>
-                  <td className="access-center">
-                    {e.authorized === true
-                      ? '✔'
-                      : e.authorized === false
-                        ? '✖'
-                        : '-'}
-                  </td>
-                  <td className="access-door">{e.door_label || '-'}</td>
+                  <td className="access-door">{e.visual_result}</td>
                 </tr>
               ))
             )}

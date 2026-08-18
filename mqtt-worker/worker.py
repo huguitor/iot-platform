@@ -48,6 +48,7 @@ DB_URL = os.getenv("DATABASE_URL_WORKER") or os.getenv(
     "DATABASE_URL",
     "postgresql://postgres:postgres@postgres:5432/postgres",
 )
+
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
 
 
@@ -68,34 +69,16 @@ redis_client = redis.Redis.from_url(REDIS_URL, decode_responses=True)
 # HELPERS GENERALES
 # ============================================================
 def utcnow() -> datetime:
-    """
-    Devuelve hora actual con zona UTC.
-    """
     return datetime.now(timezone.utc)
 
 
-
 def connect_db():
-    """
-    Abre una conexión nueva a PostgreSQL.
-    """
     conn = psycopg2.connect(DB_URL)
     conn.autocommit = True
     return conn
 
 
-
 def ensure_connection(conn):
-    """
-    Garantiza una conexión PostgreSQL válida.
-
-    Casos que cubre:
-    - conn es None
-    - conn está cerrada
-    - conn parece viva pero quedó inválida
-
-    Si falla, crea una nueva conexión.
-    """
     try:
         if conn is None or conn.closed != 0:
             logging.warning("DB connection is closed or missing. Reconnecting...")
@@ -118,23 +101,14 @@ def ensure_connection(conn):
         return connect_db()
 
 
-
 def safe_json_loads(payload_raw: bytes) -> Optional[Any]:
-    """
-    Intenta decodificar payload como JSON.
-    Si no puede, devuelve None.
-    """
     try:
         return json.loads(payload_raw.decode("utf-8"))
     except Exception:
         return None
 
 
-
 def payload_to_json_compatible(payload: Any) -> Any:
-    """
-    Convierte payload a algo apto para guardar en JSONB.
-    """
     if isinstance(payload, (dict, list, int, float, bool)) or payload is None:
         return payload
 
@@ -151,10 +125,9 @@ def payload_to_json_compatible(payload: Any) -> Any:
     return {"raw": str(payload)}
 
 
-
 def parse_device_id_from_topic(topic: str) -> Optional[str]:
     """
-    Espera topics del estilo:
+    Topics esperados:
     iot/devices/{device_id}/telemetry
     iot/devices/{device_id}/state
     iot/devices/{device_id}/status
@@ -168,6 +141,48 @@ def parse_device_id_from_topic(topic: str) -> Optional[str]:
     return None
 
 
+def normalize_bool(value: Any) -> Optional[bool]:
+    """
+    Normaliza booleanos que puedan venir desde Arduino como:
+    true/false, 1/0, "1"/"0", "true"/"false".
+    """
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, int):
+        return bool(value)
+
+    if isinstance(value, str):
+        value_normalized = value.strip().lower()
+        if value_normalized in ("1", "true", "yes", "on"):
+            return True
+        if value_normalized in ("0", "false", "no", "off"):
+            return False
+
+    return None
+
+
+def normalize_door_sensor(value: Any) -> Optional[str]:
+    """
+    Normaliza estado de sensor magnético.
+    Valores finales permitidos:
+    - open
+    - closed
+    """
+    if value is None:
+        return None
+
+    text = str(value).strip().lower()
+
+    if text in ("open", "opened", "abierta", "abierto", "1"):
+        return "open"
+
+    if text in ("closed", "close", "cerrada", "cerrado", "0"):
+        return "closed"
+
+    return text
+
+
 # ============================================================
 # CREACIÓN / AJUSTE DE TABLAS
 # ============================================================
@@ -175,24 +190,27 @@ def ensure_tables(conn):
     """
     Crea y ajusta tablas necesarias.
 
-    Mantiene:
+    Este worker mantiene:
     - devices
     - commands
     - telemetry
-
-    Agrega:
     - mqtt_events
     - audit_logs
     - access_events
 
-    Mejora commands para trazabilidad:
-    - dispatched_at
-    - acknowledged_at
-    - response_payload
+    Además agrega columnas de estado actual en devices:
+    - last_door_opened
+    - last_door_event_at
+    - last_door_reader
+    - last_access_event_type
+    - last_card_uid
+    - last_access_authorized
+    - last_door_sensor_state
+    - last_door_sensor_at
 
-    Nota:
-    acknowledged_at y response_payload quedan listos para futuro,
-    aunque hoy el protocolo real no confirma por command_id.
+    IMPORTANTE:
+    access_events es historial.
+    devices guarda el estado actual para dashboard.
     """
     with conn.cursor() as cur:
         # --------------------------------------------------------
@@ -211,6 +229,58 @@ def ensure_tables(conn):
             """
         )
 
+        # Estado actual de control de acceso.
+        cur.execute(
+            """
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_door_opened BOOLEAN NULL;
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_door_event_at TIMESTAMPTZ NULL;
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_door_reader VARCHAR(50) NULL;
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_access_event_type VARCHAR(50) NULL;
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_card_uid VARCHAR(100) NULL;
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_access_authorized BOOLEAN NULL;
+            """
+        )
+
+        # Estado real del sensor magnético.
+        cur.execute(
+            """
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_door_sensor_state VARCHAR(20) NULL;
+            """
+        )
+        cur.execute(
+            """
+            ALTER TABLE devices
+            ADD COLUMN IF NOT EXISTS last_door_sensor_at TIMESTAMPTZ NULL;
+            """
+        )
+
         # --------------------------------------------------------
         # TABLA commands
         # --------------------------------------------------------
@@ -226,7 +296,6 @@ def ensure_tables(conn):
             """
         )
 
-        # Compatibilidad con instalaciones previas
         cur.execute(
             """
             ALTER TABLE commands
@@ -435,7 +504,6 @@ def upsert_device(conn, device_id: str, status: str, last_seen: datetime):
         )
 
 
-
 def update_device_status(conn, device_id: str, status: str):
     with conn.cursor() as cur:
         cur.execute(
@@ -446,7 +514,6 @@ def update_device_status(conn, device_id: str, status: str):
             """,
             (status, device_id),
         )
-
 
 
 def insert_telemetry(conn, device_id: str, timestamp: datetime, payload: dict):
@@ -460,15 +527,7 @@ def insert_telemetry(conn, device_id: str, timestamp: datetime, payload: dict):
         )
 
 
-
 def mark_command_dispatched(conn, command_id: int):
-    """
-    Marca comando como despachado al broker.
-
-    OJO:
-    Esto no significa ejecutado por el dispositivo.
-    Solo significa que el worker lo publicó correctamente.
-    """
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -482,7 +541,6 @@ def mark_command_dispatched(conn, command_id: int):
         )
 
 
-
 def mark_command_failed(conn, command_id: int):
     with conn.cursor() as cur:
         cur.execute(
@@ -493,7 +551,6 @@ def mark_command_failed(conn, command_id: int):
             """,
             (command_id,),
         )
-
 
 
 def fetch_pending_commands(conn, limit: int = 50):
@@ -555,7 +612,6 @@ def insert_mqtt_event(
         )
 
 
-
 def insert_audit_log(
     conn,
     *,
@@ -606,7 +662,6 @@ def insert_audit_log(
         )
 
 
-
 def insert_access_event(
     conn,
     *,
@@ -616,13 +671,27 @@ def insert_access_event(
     card_uid: Optional[str],
     authorized: Optional[bool],
     door_opened: Optional[bool],
+    door_sensor: Optional[str],
     payload: Any,
 ):
     """
-    Guarda eventos específicos de control de acceso
-    Y actualiza el estado actual del dispositivo (devices).
+    Guarda eventos específicos de control de acceso.
 
-    Payload esperado:
+    También actualiza devices con el estado actual.
+
+    Diferencia importante:
+
+    door_opened:
+        indica que Arduino activó relé/apertura.
+
+    door_sensor:
+        indica estado real del sensor magnético:
+        - open
+        - closed
+
+    Ejemplos payload:
+
+    ACCESS:
     {
         "event": "access",
         "reader": "L1",
@@ -630,14 +699,21 @@ def insert_access_event(
         "authorized": true,
         "door_opened": true
     }
+
+    DOOR STATE:
+    {
+        "event": "door_state",
+        "reader": "L1",
+        "door_sensor": "open"
+    }
     """
     payload_json = payload_to_json_compatible(payload)
     now = utcnow()
 
     with conn.cursor() as cur:
-        # ============================================================
+        # ========================================================
         # INSERT HISTÓRICO
-        # ============================================================
+        # ========================================================
         cur.execute(
             """
             INSERT INTO access_events (
@@ -664,9 +740,9 @@ def insert_access_event(
             ),
         )
 
-        # ============================================================
-        # 🔴 ACTUALIZAR ESTADO ACTUAL (devices)
-        # ============================================================
+        # ========================================================
+        # ESTADO ACTUAL POR RELÉ / ACCESO
+        # ========================================================
         if device_id and isinstance(door_opened, bool):
             cur.execute(
                 """
@@ -689,6 +765,29 @@ def insert_access_event(
                     device_id,
                 ),
             )
+
+        # ========================================================
+        # ESTADO ACTUAL REAL DEL SENSOR MAGNÉTICO
+        # ========================================================
+        if device_id and door_sensor:
+            cur.execute(
+                """
+                UPDATE devices
+                SET last_door_sensor_state = %s,
+                    last_door_sensor_at = %s,
+                    last_door_reader = %s,
+                    last_access_event_type = %s
+                WHERE device_id = %s;
+                """,
+                (
+                    door_sensor,
+                    now,
+                    reader,
+                    event_type,
+                    device_id,
+                ),
+            )
+
 
 # ============================================================
 # PRESENCIA / HEARTBEAT
@@ -718,6 +817,7 @@ def touch_device_presence(conn, device_id: str, status: str = "online"):
 # ============================================================
 def handle_telemetry(conn, topic: str, payload_raw: bytes):
     data = safe_json_loads(payload_raw)
+
     if data is None:
         logging.warning("Invalid JSON on %s", topic)
 
@@ -800,6 +900,7 @@ def handle_telemetry(conn, topic: str, payload_raw: bytes):
     insert_telemetry(conn, device_id, timestamp, data)
 
     event_type = "mqtt_state_received" if topic.endswith("/state") else "mqtt_telemetry_received"
+
     insert_mqtt_event(
         conn,
         device_id=device_id,
@@ -810,8 +911,11 @@ def handle_telemetry(conn, topic: str, payload_raw: bytes):
         processed_ok=True,
     )
 
-    logging.info("Telemetry stored for %s", device_id)
-
+    logging.info(
+        "Telemetry stored | device=%s payload=%s",
+        device_id,
+        json.dumps(data, ensure_ascii=False),
+    )
 
 
 def handle_status(conn, topic: str, payload_raw: bytes):
@@ -846,6 +950,7 @@ def handle_status(conn, topic: str, payload_raw: bytes):
 
     elif normalized == "offline":
         upsert_device(conn, device_id, status="offline", last_seen=now)
+
         try:
             redis_client.set(
                 f"device:{device_id}:status",
@@ -862,11 +967,12 @@ def handle_status(conn, topic: str, payload_raw: bytes):
 
     else:
         upsert_device(conn, device_id, status=normalized, last_seen=now)
+
         try:
             redis_client.set(
                 f"device:{device_id}:status",
                 normalized,
-                ex=max(DEVICE_OFFLINE_TIMEOUT_SECONDS * 4, 120),
+                ex=DEVICE_OFFLINE_TIMEOUT_SECONDS,
             )
             redis_client.set(
                 f"device:{device_id}:last_seen_ts",
@@ -889,18 +995,16 @@ def handle_status(conn, topic: str, payload_raw: bytes):
     logging.info("Status %s for %s", normalized, device_id)
 
 
-
 def handle_event(conn, topic: str, payload_raw: bytes):
     """
     Maneja eventos desacoplados del sistema IoT.
 
-    Uso principal actual:
-    - Control de acceso
-
     Topic esperado:
     iot/devices/{device_id}/event
 
-    Payload esperado:
+    Eventos soportados actualmente:
+
+    1) access
     {
         "event": "access",
         "reader": "L1",
@@ -908,6 +1012,24 @@ def handle_event(conn, topic: str, payload_raw: bytes):
         "authorized": true,
         "door_opened": true
     }
+
+    2) door_request
+    {
+        "event": "door_request",
+        "source": "button",
+        "reader": "L2",
+        "door_opened": true
+    }
+
+    3) door_state
+    {
+        "event": "door_state",
+        "reader": "L1",
+        "door_sensor": "open"
+    }
+
+    4) mode / enroll / error
+    También se guardan como eventos generales.
     """
     data = safe_json_loads(payload_raw)
     device_id = parse_device_id_from_topic(topic)
@@ -978,45 +1100,48 @@ def handle_event(conn, topic: str, payload_raw: bytes):
         )
         return
 
-    # Un evento también indica que el dispositivo está vivo.
+    # Todo evento válido indica que el dispositivo está vivo.
     touch_device_presence(conn, device_id, status="online")
 
     event_name = data.get("event") or data.get("event_type") or "unknown"
     reader = data.get("reader")
     card_uid = data.get("card_uid")
-    authorized = data.get("authorized")
-    door_opened = data.get("door_opened")
 
-    # Normalización defensiva: si vienen 0/1 desde Arduino, los convertimos a bool.
-    if isinstance(authorized, int):
-        authorized = bool(authorized)
-    if isinstance(door_opened, int):
-        door_opened = bool(door_opened)
+    authorized = normalize_bool(data.get("authorized"))
+    door_opened = normalize_bool(data.get("door_opened"))
+    door_sensor = normalize_door_sensor(
+        data.get("door_sensor")
+        or data.get("state")
+)
 
-    # Guardado específico para control de acceso.
     insert_access_event(
         conn,
         device_id=device_id,
         reader=reader,
         event_type=event_name,
         card_uid=card_uid,
-        authorized=authorized if isinstance(authorized, bool) else None,
-        door_opened=door_opened if isinstance(door_opened, bool) else None,
+        authorized=authorized,
+        door_opened=door_opened,
+        door_sensor=door_sensor,
         payload=data,
     )
 
-    # Trazabilidad MQTT general.
+    mqtt_event_type = (
+        "access_event_received"
+        if event_name == "access"
+        else "mqtt_device_event_received"
+    )
+
     insert_mqtt_event(
         conn,
         device_id=device_id,
         direction="inbound",
         topic=topic,
         payload=data,
-        event_type="access_event_received" if event_name == "access" else "mqtt_device_event_received",
+        event_type=mqtt_event_type,
         processed_ok=True,
     )
 
-    # Auditoría general.
     insert_audit_log(
         conn,
         action_type="access_event" if event_name == "access" else "mqtt_device_event_received",
@@ -1025,15 +1150,16 @@ def handle_event(conn, topic: str, payload_raw: bytes):
         result="success",
     )
 
-    logging.info("Device event stored for %s: %s", device_id, event_name)
-
+    logging.info(
+        "Device event stored | device=%s event=%s reader=%s payload=%s",
+        device_id,
+        event_name,
+        reader,
+        json.dumps(data, ensure_ascii=False),
+    )
 
 
 def handle_response(conn, topic: str, payload_raw: bytes):
-    """
-    Hoy el sistema real no usa response como confirmación fuerte
-    de comandos. Igual lo guardamos para trazabilidad.
-    """
     device_id = parse_device_id_from_topic(topic)
     parsed = safe_json_loads(payload_raw)
     payload = parsed if parsed is not None else payload_raw.decode("utf-8", errors="replace")
@@ -1085,6 +1211,7 @@ def presence_watchdog_loop():
 
                 if age_seconds > DEVICE_OFFLINE_TIMEOUT_SECONDS:
                     current_status = None
+
                     try:
                         current_status = redis_client.get(f"device:{device_id}:status")
                     except Exception as exc:
@@ -1154,19 +1281,6 @@ def presence_watchdog_loop():
 # DESPACHO DE COMANDOS SALIENTES
 # ============================================================
 def command_dispatch_loop(client: mqtt.Client):
-    """
-    Busca comandos pendientes en DB y los publica por MQTT.
-
-    Realidad actual del sistema:
-    - Topic: iot/devices/{device_id}/cmd
-    - Payload: JSON plano, por ejemplo:
-      {"cmd":"set_output","output":2,"value":true}
-
-    Por eso:
-    - NO envolvemos el comando en otro JSON
-    - NO agregamos command_id todavía
-    - marcamos 'dispatched', no 'sent'
-    """
     conn = None
 
     while True:
@@ -1177,11 +1291,8 @@ def command_dispatch_loop(client: mqtt.Client):
             for cmd_id, device_id, command in pending:
                 topic = f"iot/devices/{device_id}/cmd"
 
-                # command viene desde DB como string.
-                # Esperamos que sea JSON válido del protocolo actual.
                 parsed_command = safe_json_loads(command.encode("utf-8"))
                 if parsed_command is None:
-                    # Si no es JSON válido, lo marcamos failed y seguimos.
                     mark_command_failed(conn, cmd_id)
 
                     insert_mqtt_event(
@@ -1208,7 +1319,7 @@ def command_dispatch_loop(client: mqtt.Client):
                     )
 
                     logging.error(
-                        "Invalid command JSON for command_id=%s device_id=%s payload=%s",
+                        "Invalid command JSON | command_id=%s device=%s payload=%s",
                         cmd_id,
                         device_id,
                         command,
@@ -1217,7 +1328,12 @@ def command_dispatch_loop(client: mqtt.Client):
 
                 payload_text = json.dumps(parsed_command, ensure_ascii=False)
 
-                logging.info("Publishing command_id=%s to %s: %s", cmd_id, topic, payload_text)
+                logging.info(
+                    "Publishing command | command_id=%s topic=%s payload=%s",
+                    cmd_id,
+                    topic,
+                    payload_text,
+                )
 
                 result = client.publish(topic, payload_text)
 
@@ -1281,7 +1397,7 @@ def command_dispatch_loop(client: mqtt.Client):
                     )
 
                     logging.error(
-                        "Failed to publish command_id=%s to %s (rc=%s)",
+                        "Failed to publish command_id=%s to %s rc=%s",
                         cmd_id,
                         device_id,
                         result.rc,
@@ -1329,12 +1445,7 @@ def on_connect(client, userdata, flags, rc):
         logging.error("Failed to connect to MQTT broker: rc=%s", rc)
 
 
-
 def on_message(client, userdata, msg):
-    """
-    Callback principal de mensajes entrantes.
-    Revalida conexión DB antes de usarla.
-    """
     try:
         userdata["db"] = ensure_connection(userdata.get("db"))
         conn = userdata["db"]
@@ -1431,15 +1542,6 @@ def on_message(client, userdata, msg):
 # MAIN
 # ============================================================
 def main():
-    """
-    Punto de entrada del worker.
-
-    Estrategia:
-    - Conexión DB #1: bootstrap de tablas
-    - Conexión DB #2: callbacks MQTT
-    - Conexión DB #3: command dispatch loop
-    - Conexión DB #4: watchdog loop
-    """
     bootstrap_conn = connect_db()
     ensure_tables(bootstrap_conn)
     bootstrap_conn.close()

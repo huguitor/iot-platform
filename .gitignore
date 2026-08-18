@@ -1,14 +1,33 @@
+# Entornos
 .env
+*.env
+
+# Python
 __pycache__/
 *.pyc
 .mypy_cache/
 .pytest_cache/
+
+# Node
+node_modules/
+dist/
+build/
+
+# IDE / sistema
 .DS_Store
 .idea/
 .vscode/
-node_modules/
 
+# Docker / logs
+*.log
+
+# Datos (CRÍTICO)
 postgres-data/
 redis-data/
+
+# Mosquitto
 mosquitto/config/passwordfile
 mosquitto/data/
+
+# Archivos basura
+.codex

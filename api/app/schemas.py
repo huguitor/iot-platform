@@ -67,6 +67,11 @@ class Device(DeviceBase):
     last_access_event_type: Optional[str] = None
     last_card_uid: Optional[str] = None
     last_access_authorized: Optional[bool] = None
+        # ============================================================
+    # 🔴 SENSOR MAGNÉTICO REAL
+    # ============================================================
+    last_door_sensor_state: Optional[str] = None
+    last_door_sensor_at: Optional[datetime] = None
 
     class Config:
         orm_mode = True

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from . import auth
 from .audit import close_session, create_session, log_action, touch_session
 from .database import Base, SessionLocal, engine, get_db
+from .access_control.routes import router as access_control_router
 from .models import (
     AccessEvent,
     AuditLog,
@@ -52,6 +53,13 @@ from .schemas import (
 # APP FASTAPI
 # ============================================================
 app = FastAPI(title="IoT Platform API")
+
+# 🔥 IMPORTANTE: registrar access_control
+app.include_router(
+    access_control_router,
+    prefix="/api/access-control",
+    tags=["access-control"],
+)
 
 # ============================================================
 # CORS
