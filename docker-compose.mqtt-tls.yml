@@ -1,0 +1,32 @@
+# Prepared only. Does nothing unless explicitly passed as a Compose override.
+# Required secret directories must already exist; never auto-create host mounts.
+services:
+  mosquitto:
+    image: eclipse-mosquitto@sha256:38c0da4f2ef84284d47b3b3eeea1cb3bdeabe81ee10caf0cd5c5ff61ee3ea408
+    ports:
+      - "${IOT_MQTT_TLS_BIND_IP:-40.160.233.73}:8883:8883"
+    volumes:
+      - type: bind
+        source: ./mosquitto/config/mosquitto-tls.conf
+        target: /mosquitto/config/mosquitto.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./mosquitto/config/acl-public
+        target: /mosquitto/config/acl-public
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${IOT_MQTT_PUBLIC_AUTH_DIR:-/srv/iot-platform-secrets/mqtt/auth}
+        target: /mosquitto/public-auth
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${IOT_MQTT_TLS_DIR:-/srv/iot-platform-secrets/mqtt/tls}
+        target: /mosquitto/tls
+        read_only: true
+        bind:
+          create_host_path: false

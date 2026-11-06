@@ -28,6 +28,14 @@ redis-data/
 # Mosquitto
 mosquitto/config/passwordfile
 mosquitto/data/
+# Defensive exclusions: actual TLS keys and public passwords live outside Git.
+mosquitto/**/privkey*.pem
+mosquitto/**/*.key
+mosquitto/**/secrets/
+mosquitto/config/passwordfile*
 
 # Archivos basura
 .codex
+
+# Respaldos locales
+backups/

@@ -592,6 +592,11 @@ def on_startup():
     - asegura usuario admin inicial
     - agrega columnas nuevas para control de acceso (si no existen)
     """
+    if os.getenv("API_STARTUP_READ_ONLY", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }:
+        return
+
     Base.metadata.create_all(bind=engine)
 
     # ============================================================

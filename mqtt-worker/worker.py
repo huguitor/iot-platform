@@ -2,10 +2,11 @@
 
 import json
 import logging
+import math
 import os
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import paho.mqtt.client as mqtt
@@ -39,6 +40,9 @@ MQTT_HOST = os.getenv("MQTT_BROKER_HOST", "mosquitto")
 MQTT_PORT = int(os.getenv("MQTT_BROKER_PORT", "1883"))
 MQTT_USERNAME = os.getenv("MQTT_USERNAME")
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD")
+# client_id fijo + clean_session=False: el broker retiene los mensajes
+# mientras el worker esta caido y se los entrega al reconectar.
+MQTT_CLIENT_ID = os.getenv("MQTT_WORKER_CLIENT_ID", "iot-platform-mqtt-worker")
 
 
 # ============================================================
@@ -50,6 +54,12 @@ DB_URL = os.getenv("DATABASE_URL_WORKER") or os.getenv(
 )
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+
+
+# ============================================================
+# EVENTOS TECNICOS: mqtt_events + auditoria, sin historial de acceso
+# ============================================================
+NON_HISTORY_EVENTS = {"list", "stats", "stats_reset", "boot"}
 
 
 # ============================================================
@@ -103,7 +113,18 @@ def ensure_connection(conn):
 
 def safe_json_loads(payload_raw: bytes) -> Optional[Any]:
     try:
-        return json.loads(payload_raw.decode("utf-8"))
+        value = json.loads(payload_raw.decode("utf-8"))
+        def check_finite(item):
+            if isinstance(item, float) and not math.isfinite(item):
+                raise ValueError("Non-finite JSON number")
+            if isinstance(item, dict):
+                for child in item.values():
+                    check_finite(child)
+            elif isinstance(item, list):
+                for child in item:
+                    check_finite(child)
+        check_finite(value)
+        return value
     except Exception:
         return None
 
@@ -135,8 +156,10 @@ def parse_device_id_from_topic(topic: str) -> Optional[str]:
     iot/devices/{device_id}/event
     iot/devices/{device_id}/cmd
     """
+    import re
     parts = topic.split("/")
-    if len(parts) >= 3:
+    if (len(parts) == 4 and parts[:2] == ["iot", "devices"]
+            and re.fullmatch(r"[A-Za-z0-9._:-]{1,120}", parts[2])):
         return parts[2]
     return None
 
@@ -673,9 +696,14 @@ def insert_access_event(
     door_opened: Optional[bool],
     door_sensor: Optional[str],
     payload: Any,
+    occurred_at: Optional[datetime] = None,
+    update_current: bool = True,
 ):
     """
     Guarda eventos específicos de control de acceso.
+
+    occurred_at conserva la hora estimada del evento.
+    Los eventos atrasados no reemplazan un estado de fecha posterior.
 
     También actualiza devices con el estado actual.
 
@@ -708,7 +736,7 @@ def insert_access_event(
     }
     """
     payload_json = payload_to_json_compatible(payload)
-    now = utcnow()
+    now = occurred_at or utcnow()
 
     with conn.cursor() as cur:
         # ========================================================
@@ -743,49 +771,41 @@ def insert_access_event(
         # ========================================================
         # ESTADO ACTUAL POR RELÉ / ACCESO
         # ========================================================
-        if device_id and isinstance(door_opened, bool):
+        if update_current and device_id and isinstance(door_opened, bool):
             cur.execute(
                 """
                 UPDATE devices
-                SET last_door_opened = %s,
-                    last_door_event_at = %s,
-                    last_door_reader = %s,
-                    last_access_event_type = %s,
-                    last_card_uid = %s,
-                    last_access_authorized = %s
-                WHERE device_id = %s;
+                SET last_door_opened = %(opened)s,
+                    last_door_event_at = %(event_at)s,
+                    last_door_reader = CASE WHEN last_door_sensor_at IS NULL OR last_door_sensor_at <= %(event_at)s THEN %(reader)s ELSE last_door_reader END,
+                    last_access_event_type = CASE WHEN last_door_sensor_at IS NULL OR last_door_sensor_at <= %(event_at)s THEN %(event_type)s ELSE last_access_event_type END,
+                    last_card_uid = %(card)s,
+                    last_access_authorized = %(authorized)s
+                WHERE device_id = %(device)s
+                  AND (last_door_event_at IS NULL OR last_door_event_at <= %(event_at)s);
                 """,
-                (
-                    door_opened,
-                    now,
-                    reader,
-                    event_type,
-                    card_uid,
-                    authorized if isinstance(authorized, bool) else None,
-                    device_id,
-                ),
+                {"opened": door_opened, "event_at": now, "reader": reader,
+                 "event_type": event_type, "card": card_uid,
+                 "authorized": authorized if isinstance(authorized, bool) else None,
+                 "device": device_id},
             )
 
         # ========================================================
         # ESTADO ACTUAL REAL DEL SENSOR MAGNÉTICO
         # ========================================================
-        if device_id and door_sensor:
+        if update_current and device_id and door_sensor:
             cur.execute(
                 """
                 UPDATE devices
-                SET last_door_sensor_state = %s,
-                    last_door_sensor_at = %s,
-                    last_door_reader = %s,
-                    last_access_event_type = %s
-                WHERE device_id = %s;
+                SET last_door_sensor_state = %(sensor)s,
+                    last_door_sensor_at = %(event_at)s,
+                    last_door_reader = CASE WHEN last_door_event_at IS NULL OR last_door_event_at <= %(event_at)s THEN %(reader)s ELSE last_door_reader END,
+                    last_access_event_type = CASE WHEN last_door_event_at IS NULL OR last_door_event_at <= %(event_at)s THEN %(event_type)s ELSE last_access_event_type END
+                WHERE device_id = %(device)s
+                  AND (last_door_sensor_at IS NULL OR last_door_sensor_at <= %(event_at)s);
                 """,
-                (
-                    door_sensor,
-                    now,
-                    reader,
-                    event_type,
-                    device_id,
-                ),
+                {"sensor": door_sensor, "event_at": now, "reader": reader,
+                 "event_type": event_type, "device": device_id},
             )
 
 
@@ -796,6 +816,10 @@ def touch_device_presence(conn, device_id: str, status: str = "online"):
     now = utcnow()
 
     upsert_device(conn, device_id, status=status, last_seen=now)
+    cache_device_presence(device_id, status, now)
+
+
+def cache_device_presence(device_id, status, now):
 
     try:
         redis_client.set(
@@ -995,7 +1019,62 @@ def handle_status(conn, topic: str, payload_raw: bytes):
     logging.info("Status %s for %s", normalized, device_id)
 
 
-def handle_event(conn, topic: str, payload_raw: bytes):
+def event_timing(data, received_at):
+    delay = data.get("delay_s", 0)
+    valid = (type(delay) in (int, float) and 0 <= delay <= 30 * 86400
+             and math.isfinite(delay))
+    return (received_at - timedelta(seconds=delay) if valid else received_at,
+            valid, delay if valid else None)
+
+
+def handle_event(conn, topic: str, payload_raw: bytes, retained=False):
+    """Atomic domain effects; stable boot_id + event_id allow durable deduplication.
+
+    Never use equal payloads, MQTT packet IDs or DUP alone as event identity.
+    Events without stable identity remain distinct to avoid losing real accesses.
+    """
+    data = safe_json_loads(payload_raw)
+    device_id = parse_device_id_from_topic(topic)
+    identity = None
+    if device_id and isinstance(data, dict):
+        boot, event = data.get("boot_id"), data.get("event_id")
+        if (isinstance(boot, str) and 0 < len(boot) <= 120
+                and type(event) in (str, int) and 0 < len(str(event)) <= 120):
+            identity = (boot, event)
+    with conn:
+        if identity:
+            boot, event = identity
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                            (json.dumps([device_id, boot, event]),))
+                cur.execute(
+                    """SELECT payload FROM mqtt_events
+                       WHERE device_id = %s AND topic = %s AND direction = 'inbound'
+                         AND processed_ok AND event_type IN
+                             ('access_event_received', 'mqtt_device_event_received')
+                         AND payload->'boot_id' = %s AND payload->'event_id' = %s
+                       ORDER BY id LIMIT 1""",
+                    (device_id, topic, Json(boot), Json(event)),
+                )
+                previous = cur.fetchone()
+            if previous:
+                # Delay can change on retransmission; the event itself must not.
+                canonical = lambda value: {k: v for k, v in value.items() if k != "delay_s"}
+                conflict = canonical(previous[0]) != canonical(data)
+                kind = "mqtt_event_identity_conflict" if conflict else "mqtt_duplicate_event_received"
+                insert_mqtt_event(conn, device_id=device_id, direction="inbound",
+                                  topic=topic, payload=data, event_type=kind,
+                                  processed_ok=not conflict)
+                insert_audit_log(conn, device_id=device_id, action_type=kind,
+                                 payload=data, result="failed" if conflict else "duplicate")
+                return
+        live_at = _handle_event(conn, topic, payload_raw, retained=retained)
+    # A failed database transaction must not leave a phantom presence in Redis.
+    if live_at is not None:
+        cache_device_presence(device_id, "online", live_at)
+
+
+def _handle_event(conn, topic: str, payload_raw: bytes, retained=False):
     """
     Maneja eventos desacoplados del sistema IoT.
 
@@ -1100,12 +1179,22 @@ def handle_event(conn, topic: str, payload_raw: bytes):
         )
         return
 
-    # Todo evento válido indica que el dispositivo está vivo.
-    touch_device_presence(conn, device_id, status="online")
-
     event_name = data.get("event") or data.get("event_type") or "unknown"
-    reader = data.get("reader")
-    card_uid = data.get("card_uid")
+    reader, card_uid = data.get("reader"), data.get("card_uid")
+    if (not isinstance(event_name, str) or len(event_name) > 100
+            or (reader is not None and (not isinstance(reader, str) or len(reader) > 50))
+            or (card_uid is not None and (not isinstance(card_uid, str) or len(card_uid) > 100))):
+        insert_mqtt_event(conn, device_id=device_id, direction="inbound", topic=topic,
+                          payload=data, event_type="mqtt_event_invalid_fields", processed_ok=False)
+        insert_audit_log(conn, device_id=device_id, action_type="mqtt_event_invalid_fields",
+                         payload=data, result="failed")
+        return
+
+    received_at = utcnow()
+    occurred_at, timing_valid, delay = event_timing(data, received_at)
+    upsert_device_if_missing(conn, device_id)
+    if timing_valid and delay == 0 and not retained:
+        upsert_device(conn, device_id, status="online", last_seen=received_at)
 
     authorized = normalize_bool(data.get("authorized"))
     door_opened = normalize_bool(data.get("door_opened"))
@@ -1113,18 +1202,29 @@ def handle_event(conn, topic: str, payload_raw: bytes):
         data.get("door_sensor")
         or data.get("state")
 )
+    if door_sensor not in ("open", "closed"):
+        door_sensor = None
 
-    insert_access_event(
-        conn,
-        device_id=device_id,
-        reader=reader,
-        event_type=event_name,
-        card_uid=card_uid,
-        authorized=authorized,
-        door_opened=door_opened,
-        door_sensor=door_sensor,
-        payload=data,
-    )
+    is_history = event_name not in NON_HISTORY_EVENTS
+
+    if event_name == "boot":
+        save_device_info(conn, device_id, data, observed_at=occurred_at,
+                         only_if_empty=retained or not timing_valid)
+
+    if is_history:
+        insert_access_event(
+            conn,
+            device_id=device_id,
+            reader=reader,
+            event_type=event_name,
+            card_uid=card_uid,
+            authorized=authorized,
+            door_opened=door_opened,
+            door_sensor=door_sensor,
+            payload=data,
+            occurred_at=occurred_at,
+            update_current=timing_valid and not retained,
+        )
 
     mqtt_event_type = (
         "access_event_received"
@@ -1142,12 +1242,16 @@ def handle_event(conn, topic: str, payload_raw: bytes):
         processed_ok=True,
     )
 
+    # Technical events also remain auditable, without pretending to be access events.
     insert_audit_log(
         conn,
         action_type="access_event" if event_name == "access" else "mqtt_device_event_received",
         device_id=device_id,
-        payload=data,
-        result="success",
+        payload={"event": data, "ingest": {
+            "received_at": received_at.isoformat(), "occurred_at": occurred_at.isoformat(),
+            "timing_valid": timing_valid, "retained": bool(retained),
+        }},
+        result="success" if timing_valid else "invalid_event_delay",
     )
 
     logging.info(
@@ -1157,6 +1261,57 @@ def handle_event(conn, topic: str, payload_raw: bytes):
         reader,
         json.dumps(data, ensure_ascii=False),
     )
+    return received_at if timing_valid and delay == 0 and not retained else None
+
+
+def save_device_info(conn, device_id: str, data: dict, observed_at=None, only_if_empty=False):
+    """Merge partial metadata, preserving newer observations and omitted values."""
+    cap = data.get("cap")
+    cap = cap if type(cap) is int and 0 <= cap <= 2147483647 else None
+    def version(key):
+        value = str(data[key]) if data.get(key) is not None else None
+        return value if value and len(value) <= 50 else None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE devices
+            SET fw_version = COALESCE(%(fw)s, fw_version),
+                gateway_fw_version = COALESCE(%(gateway)s, gateway_fw_version),
+                card_capacity = COALESCE(%(capacity)s, card_capacity),
+                info = COALESCE(info, '{}'::jsonb) || %(info)s,
+                info_at = %(observed)s
+            WHERE device_id = %(device)s
+              AND (info_at IS NULL OR (NOT %(empty_only)s AND info_at <= %(observed)s));
+            """,
+            {"fw": version("fw"), "gateway": version("gateway_fw"), "capacity": cap,
+             "info": Json(data), "observed": observed_at or utcnow(),
+             "device": device_id, "empty_only": bool(only_if_empty)},
+        )
+
+
+def handle_info(conn, topic: str, payload_raw: bytes, retained=False):
+    """Retained metadata does not imply presence or replace a newer observation."""
+    device_id = parse_device_id_from_topic(topic)
+    data = safe_json_loads(payload_raw)
+    valid = bool(device_id) and isinstance(data, dict)
+    if valid:
+        upsert_device_if_missing(conn, device_id)
+        save_device_info(conn, device_id, data, only_if_empty=retained)
+    insert_mqtt_event(conn, device_id=device_id, direction="inbound", topic=topic,
+                      payload=data if valid else payload_raw,
+                      event_type="mqtt_info_received" if valid else "mqtt_invalid_info_received",
+                      processed_ok=valid)
+    insert_audit_log(conn, device_id=device_id, action_type="mqtt_info_received",
+                     payload={"info": data if valid else payload_to_json_compatible(payload_raw),
+                              "retained": bool(retained)}, result="success" if valid else "failed")
+
+
+def upsert_device_if_missing(conn, device_id: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO devices (device_id, status) VALUES (%s, 'offline') ON CONFLICT (device_id) DO NOTHING;",
+            (device_id,),
+        )
 
 
 def handle_response(conn, topic: str, payload_raw: bytes):
@@ -1430,7 +1585,53 @@ def command_dispatch_loop(client: mqtt.Client):
 # ============================================================
 # CALLBACKS MQTT
 # ============================================================
+HEARTBEAT_TOPIC = "iot/platform/worker/heartbeat"
+HEARTBEAT_INTERVAL_SECONDS = 10
+# Se activa recien cuando el broker confirma (SUBACK) la suscripcion a /event,
+# y se apaga al desconectarse: el gateway solo vacia su cola si hay heartbeat.
+heartbeat_ready = threading.Event()
+event_sub_mid = {"mid": None}
+
+
+def send_heartbeat_if_ready(client):
+    if not heartbeat_ready.is_set():
+        return False
+    result = client.publish(HEARTBEAT_TOPIC, json.dumps({"ts": int(time.time())}),
+                            qos=0, retain=False)
+    if result.rc != mqtt.MQTT_ERR_SUCCESS:
+        logging.warning("Heartbeat not queued (rc=%s)", result.rc)
+        return False
+    return True
+
+
+def heartbeat_loop(client: mqtt.Client):
+    while True:
+        time.sleep(HEARTBEAT_INTERVAL_SECONDS)
+        try:
+            send_heartbeat_if_ready(client)
+        except Exception:
+            logging.exception("Heartbeat publish failed")
+
+
+def on_subscribe(client, userdata, mid, granted_qos):
+    if mid is None or mid != event_sub_mid["mid"]:
+        return
+    if list(granted_qos) != [1]:
+        heartbeat_ready.clear()
+        logging.error("Event subscription did not grant QoS 1; heartbeat disabled")
+        return
+    heartbeat_ready.set()
+    logging.info("Event subscription confirmed at QoS 1; heartbeat enabled")
+
+
+def on_disconnect(client, userdata, rc):
+    heartbeat_ready.clear()
+    logging.warning("Disconnected from MQTT broker (rc=%s); heartbeat disabled", rc)
+
+
 def on_connect(client, userdata, flags, rc):
+    heartbeat_ready.clear()
+    event_sub_mid["mid"] = None
     if rc == 0:
         logging.info("Connected to MQTT broker")
 
@@ -1438,7 +1639,10 @@ def on_connect(client, userdata, flags, rc):
         client.subscribe("iot/devices/+/state")
         client.subscribe("iot/devices/+/status")
         client.subscribe("iot/devices/+/response")
-        client.subscribe("iot/devices/+/event")
+        # QoS 1: los eventos de acceso no se deben perder (sesion persistente)
+        result, mid = client.subscribe("iot/devices/+/event", qos=1)
+        event_sub_mid["mid"] = mid if result == mqtt.MQTT_ERR_SUCCESS else None
+        client.subscribe("iot/devices/+/info")
 
         logging.info("Subscribed to device topics")
     else:
@@ -1449,93 +1653,42 @@ def on_message(client, userdata, msg):
     try:
         userdata["db"] = ensure_connection(userdata.get("db"))
         conn = userdata["db"]
-
-        if msg.topic.endswith("/telemetry") or msg.topic.endswith("/state"):
-            handle_telemetry(conn, msg.topic, msg.payload)
-
-        elif msg.topic.endswith("/status"):
-            handle_status(conn, msg.topic, msg.payload)
-
-        elif msg.topic.endswith("/response"):
-            handle_response(conn, msg.topic, msg.payload)
-
-        elif msg.topic.endswith("/event"):
-            handle_event(conn, msg.topic, msg.payload)
-
+        if msg.topic.endswith("/event"):
+            handle_event(conn, msg.topic, msg.payload, retained=msg.retain)
         else:
-            device_id = parse_device_id_from_topic(msg.topic)
+            with conn:
+                if msg.topic.endswith("/telemetry") or msg.topic.endswith("/state"):
+                    handle_telemetry(conn, msg.topic, msg.payload)
+                elif msg.topic.endswith("/status"):
+                    handle_status(conn, msg.topic, msg.payload)
+                elif msg.topic.endswith("/response"):
+                    handle_response(conn, msg.topic, msg.payload)
+                elif msg.topic.endswith("/info"):
+                    handle_info(conn, msg.topic, msg.payload, retained=msg.retain)
+                else:
+                    insert_mqtt_event(conn, device_id=parse_device_id_from_topic(msg.topic),
+                                      direction="inbound", topic=msg.topic, payload=msg.payload,
+                                      event_type="mqtt_unhandled_topic_received", processed_ok=False)
+                    insert_audit_log(conn, device_id=parse_device_id_from_topic(msg.topic),
+                                     action_type="mqtt_unhandled_topic_received",
+                                     payload={"topic": msg.topic, "payload": payload_to_json_compatible(msg.payload)},
+                                     result="failed")
+    except Exception:
+        # Paho 1.6 acknowledges QoS 1 after this callback returns successfully.
+        # Propagate failures so the process exits and persistent-session redelivery
+        # can retry; swallowing a DB error would acknowledge an uncommitted event.
+        logging.exception("MQTT processing failed; stopping before acknowledgement")
+        raise
 
-            insert_mqtt_event(
-                conn,
-                device_id=device_id,
-                direction="inbound",
-                topic=msg.topic,
-                payload=msg.payload,
-                event_type="mqtt_unhandled_topic_received",
-                processed_ok=False,
-            )
 
-            insert_audit_log(
-                conn,
-                action_type="mqtt_unhandled_topic_received",
-                device_id=device_id,
-                payload={
-                    "topic": msg.topic,
-                    "payload": msg.payload.decode("utf-8", errors="replace"),
-                },
-                result="failed",
-            )
-
-            logging.warning("Unhandled MQTT topic: %s", msg.topic)
-
-    except psycopg2.InterfaceError as exc:
-        logging.exception("MQTT callback DB interface error on %s: %s", msg.topic, exc)
-        try:
-            if userdata.get("db") is not None:
-                userdata["db"].close()
-        except Exception:
-            pass
-        userdata["db"] = None
-
-    except psycopg2.OperationalError as exc:
-        logging.exception("MQTT callback DB operational error on %s: %s", msg.topic, exc)
-        try:
-            if userdata.get("db") is not None:
-                userdata["db"].close()
-        except Exception:
-            pass
-        userdata["db"] = None
-
-    except Exception as exc:
-        logging.exception("Error handling message on %s: %s", msg.topic, exc)
-
-        try:
-            userdata["db"] = ensure_connection(userdata.get("db"))
-            conn = userdata["db"]
-
-            device_id = parse_device_id_from_topic(msg.topic)
-            insert_mqtt_event(
-                conn,
-                device_id=device_id,
-                direction="inbound",
-                topic=msg.topic,
-                payload=msg.payload,
-                event_type="mqtt_message_processing_error",
-                processed_ok=False,
-            )
-            insert_audit_log(
-                conn,
-                action_type="mqtt_message_processing_error",
-                device_id=device_id,
-                payload={
-                    "topic": msg.topic,
-                    "error": str(exc),
-                    "payload": msg.payload.decode("utf-8", errors="replace"),
-                },
-                result="failed",
-            )
-        except Exception:
-            logging.exception("Could not persist MQTT processing error")
+def validate_firmware_schema(conn):
+    with conn.cursor() as cur:
+        cur.execute("""SELECT column_name FROM information_schema.columns
+                       WHERE table_schema='public' AND table_name='devices'""")
+        columns = {row[0] for row in cur.fetchall()}
+    required = {"fw_version", "gateway_fw_version", "card_capacity", "info", "info_at"}
+    if not required <= columns:
+        raise RuntimeError("Apply Alembic 20261104_01 before starting this worker")
 
 
 # ============================================================
@@ -1543,20 +1696,35 @@ def on_message(client, userdata, msg):
 # ============================================================
 def main():
     bootstrap_conn = connect_db()
+    validate_firmware_schema(bootstrap_conn)
     ensure_tables(bootstrap_conn)
     bootstrap_conn.close()
 
     callback_conn = connect_db()
 
-    client = mqtt.Client(userdata={"db": callback_conn})
+    client = mqtt.Client(
+        client_id=MQTT_CLIENT_ID,
+        clean_session=False,
+        userdata={"db": callback_conn},
+    )
+    client.reconnect_delay_set(min_delay=1, max_delay=30)
 
     if MQTT_USERNAME and MQTT_PASSWORD:
         client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
 
     client.on_connect = on_connect
     client.on_message = on_message
+    client.on_subscribe = on_subscribe
+    client.on_disconnect = on_disconnect
 
-    client.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
+    # Reintenta hasta que el broker este disponible (arranque en frio)
+    while True:
+        try:
+            client.connect(MQTT_HOST, MQTT_PORT, keepalive=60)
+            break
+        except OSError as exc:
+            logging.warning("MQTT broker no disponible (%s), reintento en 3s", exc)
+            time.sleep(3)
 
     dispatcher = threading.Thread(
         target=command_dispatch_loop,
@@ -1570,6 +1738,8 @@ def main():
         daemon=True,
     )
     watchdog.start()
+
+    threading.Thread(target=heartbeat_loop, args=(client,), daemon=True).start()
 
     client.loop_forever()
 

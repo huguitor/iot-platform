@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { fetchMqttEvents } from '../api';
+import { formatDateTime } from '../utils/time';
 
 function toUnixTimestamp(value) {
   if (!value) return undefined;
@@ -10,13 +11,6 @@ function toUnixTimestamp(value) {
   return Math.floor(date.getTime() / 1000);
 }
 
-function formatDateTime(value) {
-  try {
-    return new Date(value).toLocaleString('es-AR');
-  } catch {
-    return value || '-';
-  }
-}
 
 function buildPayloadSummary(payload) {
   if (!payload || typeof payload !== 'object') return 'Sin datos';

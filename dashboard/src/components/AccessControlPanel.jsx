@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchAccessEvents, fetchDevices } from '../api';
+import { formatDateTime } from '../utils/time';
 
 // ============================================================
 // HELPERS
@@ -17,24 +18,6 @@ function toUnixTimestamp(value) {
   if (Number.isNaN(date.getTime())) return undefined;
 
   return Math.floor(date.getTime() / 1000);
-}
-
-/**
- * Formatea una fecha/hora en locale es-AR.
- * Retorna '-' si el valor es inválido o vacío.
- */
-function formatDateTime(value) {
-  if (!value) return '-';
-
-  try {
-    const date = new Date(value);
-
-    if (Number.isNaN(date.getTime())) return '-';
-
-    return date.toLocaleString('es-AR');
-  } catch {
-    return value || '-';
-  }
 }
 
 // ============================================================

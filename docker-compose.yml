@@ -1,19 +1,26 @@
+name: iot-platform
+
 services:
   mosquitto:
     image: eclipse-mosquitto:2
     container_name: iot-platform-mosquitto
     restart: unless-stopped
     ports:
-      - "1883:1883"
-      - "9001:9001"
+      - "127.0.0.1:${IOT_MQTT_PORT:-1883}:1883"
+      - "127.0.0.1:${IOT_MQTT_WS_PORT:-9001}:9001"
     volumes:
       - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./mosquitto/config/acl:/mosquitto/config/acl:ro
       - ./mosquitto/config/passwordfile:/mosquitto/config/passwordfile:ro
       - ./mosquitto/data:/mosquitto/data
       - ./mosquitto/log:/mosquitto/log
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 1883 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     networks:
-      - estarnet_network
+      - iot_private
 
   postgres:
     image: postgres:15
@@ -27,7 +34,7 @@ services:
     volumes:
       - ./postgres-data:/var/lib/postgresql/data
     networks:
-      - estarnet_network
+      - iot_private
 
   redis:
     image: redis:7-alpine
@@ -37,10 +44,12 @@ services:
     volumes:
       - ./redis-data:/data
     networks:
-      - estarnet_network
+      - iot_private
 
   api:
     build: ./api
+    ports:
+      - "127.0.0.1:${IOT_API_PORT:-18000}:8000"
     container_name: iot-platform-api
     restart: unless-stopped
     env_file: .env
@@ -48,19 +57,23 @@ services:
       - postgres
       - redis
     networks:
-      - estarnet_network
+      - iot_private
 
   mqtt-worker:
+    profiles: ["worker"]
     build: ./mqtt-worker
     container_name: iot-platform-mqtt-worker
     restart: unless-stopped
     env_file: .env
     depends_on:
-      - mosquitto
-      - postgres
-      - redis
+      mosquitto:
+        condition: service_healthy
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
     networks:
-      - estarnet_network
+      - iot_private
 
   dashboard:
     build:
@@ -68,14 +81,19 @@ services:
       args:
         VITE_API_BASE: ${VITE_API_BASE}
         VITE_TIME_ZONE: ${VITE_TIME_ZONE}
+    ports:
+      - "127.0.0.1:${IOT_DASHBOARD_PORT:-18080}:80"
+    volumes:
+      - ./nginx/dashboard.conf:/etc/nginx/conf.d/default.conf:ro
     container_name: iot-platform-dashboard
     restart: unless-stopped
     env_file: .env
     depends_on:
       - api
     networks:
-      - estarnet_network
+      - iot_private
 
 networks:
-  estarnet_network:
-    external: true
+  iot_private:
+    driver: bridge
+    # Red exclusiva de este proyecto; no se conecta a redes externas.

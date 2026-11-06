@@ -14,17 +14,17 @@ iot-platform
 └── nginx            (reverse proxy para API + dashboard)
 ```
 
-## Configuración rápida
-1. Copia variables: `cp .env.example .env` (ya se dejó un .env inicial).
-2. Genera usuarios MQTT (obligatorio):
-   ```bash
-   cd mosquitto/config
-   docker run --rm -v "$PWD":/mosquitto/config eclipse-mosquitto:2 \
-     mosquitto_passwd -b /mosquitto/config/passwordfile iotuser changeme
-   ```
-   - Ajusta `iotuser/changeme` al valor de `MQTT_USERNAME` y `MQTT_PASSWORD` en `.env`.
-3. Levanta todo: `docker compose up -d` (desde la raíz del proyecto).
-4. Dashboard: http://localhost (Nginx sirve dashboard y proxy a /api).
+## Configuración y migración al VPS Debian 13
+
+Consultar [el procedimiento de migración](docs/migracion-vps-debian13.md) antes de
+iniciar servicios. La configuración publica API en `127.0.0.1:18000`, dashboard en
+`127.0.0.1:18080` y MQTT en `127.0.0.1:1883`/`127.0.0.1:9001`, con puertos
+configurables en `.env.example`. El dashboard incluye el proxy `/api/`.
+
+El worker queda excluido del arranque habitual mediante el perfil `worker`.
+No activarlo durante la migración. El arranque de la API modifica el esquema de
+la base de datos; requiere revisar primero el procedimiento documentado.
+No se incluye un `.env` real ni credenciales MQTT.
 
 ## Topics y payloads
 - Telemetría: `iot/devices/{device_id}/telemetry` payload JSON `{ "ts": 1710000000, ... }`
@@ -48,14 +48,6 @@ iot-platform
 - JWT configurable via `JWT_SECRET`, `JWT_ALGORITHM`, `JWT_EXPIRES_MINUTES`.
 - Mosquitto con auth + ACL (`mosquitto/config/acl`).
 - Variables sensibles solo en `.env` (no se commitean en `.env.example`).
-
-## Migración a /var/www
-No pude crear `/var/www/iot-platform` sin privilegios sudo. Copia este directorio (`/home/hugo/iot-platform`) a `/var/www` o ajusta permisos y vuelve a ejecutar:
-```
-sudo mkdir -p /var/www/iot-platform
-sudo chown -R $USER:$USER /var/www/iot-platform
-cp -r ~/iot-platform /var/www/
-```
 
 ## Próximos pasos opcionales
 - Agregar tests de API (Pytest) y pipelines.

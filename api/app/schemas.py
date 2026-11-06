@@ -73,6 +73,11 @@ class Device(DeviceBase):
     last_door_sensor_state: Optional[str] = None
     last_door_sensor_at: Optional[datetime] = None
 
+    fw_version: Optional[str] = None
+    gateway_fw_version: Optional[str] = None
+    card_capacity: Optional[int] = None
+    info_at: Optional[datetime] = None
+
     class Config:
         orm_mode = True
 

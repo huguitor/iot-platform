@@ -28,7 +28,7 @@ export default function App() {
   const [authError, setAuthError] = useState('');
   const [authForm, setAuthForm] = useState({
     username: 'admin',
-    password: 'admin123',
+    password: '',
   });
 
   const moduleAccess = {

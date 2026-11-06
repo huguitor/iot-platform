@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import StatusBadge from './StatusBadge';
 import TelemetryChart from './TelemetryChart';
+import { formatTime } from '../utils/time';
 
 export default function DeviceDetail({ device, telemetry, onSendCommand, token, role }) {
   const [command, setCommand] = useState('{"cmd":"restart"}');
@@ -75,7 +76,7 @@ export default function DeviceDetail({ device, telemetry, onSendCommand, token, 
         <div className="scada-stats">
           <StatCard
             label="Último mensaje"
-            value={device.last_seen ? new Date(device.last_seen).toLocaleTimeString() : 'n/d'}
+            value={device.last_seen ? formatTime(device.last_seen) : 'n/d'}
           />
           <StatCard
             label="IP"

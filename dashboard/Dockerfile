@@ -6,8 +6,8 @@ ENV VITE_API_BASE=${VITE_API_BASE}
 ARG VITE_TIME_ZONE
 ENV VITE_TIME_ZONE=${VITE_TIME_ZONE}
 
-COPY package.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY . .
 RUN npm run build
 

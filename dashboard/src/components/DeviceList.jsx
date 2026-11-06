@@ -1,6 +1,7 @@
 // src/components/DeviceList.jsx
 
 import StatusBadge from './StatusBadge';
+import { formatDateTime } from '../utils/time';
 
 export default function DeviceList({ devices, onSelect, selectedId }) {
   return (
@@ -25,7 +26,7 @@ export default function DeviceList({ devices, onSelect, selectedId }) {
             </div>
             <p className="device-name">{d.name || 'Sin nombre'}</p>
             <p className="device-meta">
-              Último mensaje: {d.last_seen ? new Date(d.last_seen).toLocaleString() : 'n/d'}
+              Último mensaje: {d.last_seen ? formatDateTime(d.last_seen) : 'n/d'}
             </p>
           </button>
         ))}

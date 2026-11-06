@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { fetchAuditLogs } from "../api";
+import { formatDateTime } from '../utils/time';
 
 export default function AuditPanel({ token }) {
   const [logs, setLogs] = useState([]);
@@ -142,7 +143,7 @@ export default function AuditPanel({ token }) {
             ) : (
               logs.map((log) => (
                 <tr key={log.id}>
-                  <td>{new Date(log.created_at).toLocaleString("es-AR")}</td>
+                  <td>{formatDateTime(log.created_at)}</td>
                   <td>{log.username || "-"}</td>
                   <td>{log.device_id || "-"}</td>
                   <td>

@@ -55,6 +55,13 @@ class Device(Base):
     # ============================================================
     # 🔴 SENSOR MAGNÉTICO REAL
     # ============================================================
+    # Info de firmware (topic /info, retenido)
+    fw_version = Column(String(50), nullable=True)
+    gateway_fw_version = Column(String(50), nullable=True)
+    card_capacity = Column(Integer, nullable=True)
+    info = Column(JSONB, nullable=True)
+    info_at = Column(DateTime(timezone=True), nullable=True)
+
     last_door_sensor_state = Column(String(50), nullable=True)
     last_door_sensor_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
