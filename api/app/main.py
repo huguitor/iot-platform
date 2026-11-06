@@ -18,6 +18,7 @@ from . import auth
 from .audit import close_session, create_session, log_action, touch_session
 from .database import Base, SessionLocal, engine, get_db
 from .access_control.routes import router as access_control_router
+from .access_integration import router as access_integration_router
 from .models import (
     AccessEvent,
     AuditLog,
@@ -60,6 +61,13 @@ app.include_router(
     access_control_router,
     prefix="/api/access-control",
     tags=["access-control"],
+)
+
+# Integración con la app externa de Control de Acceso (clave ACCESS_INTEGRATION_API_KEY)
+app.include_router(
+    access_integration_router,
+    prefix="/api/integrations/access",
+    tags=["integrations"],
 )
 
 # ============================================================
