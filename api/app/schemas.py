@@ -53,6 +53,7 @@ class DeviceBase(BaseModel):
 
 
 class Device(DeviceBase):
+    company_id: Optional[int] = None
     status: Optional[str] = None
     created_at: Optional[datetime]
     last_seen: Optional[datetime]
@@ -214,6 +215,8 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str
+    # Solo lo usa el superadmin; un admin crea usuarios en su propia empresa.
+    company_id: Optional[int] = None
 
     @validator("password")
     def validate_password(cls, v):
@@ -227,12 +230,85 @@ class UserCreate(UserBase):
 
 class User(UserBase):
     id: int
+    company_id: Optional[int] = None
+    company_name: Optional[str] = None
     created_at: Optional[datetime]
     created_by_user_id: Optional[int] = None
     channels: List[UserChannel] = Field(default_factory=list)
 
     class Config:
         orm_mode = True
+
+
+# ============================================================
+# COMPANIES
+# ============================================================
+COMPANY_CODE_REGEX = re.compile(r"^[a-z0-9][a-z0-9_-]{1,49}$")
+
+
+class CompanyBase(BaseModel):
+    name: str
+    code: str
+    tax_id: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    is_active: bool = True
+
+    @validator("name")
+    def validate_name(cls, v):
+        v = _require_non_empty(v, "name")
+        if len(v) > 150:
+            raise ValueError("name is too long")
+        return v
+
+    @validator("code")
+    def validate_code(cls, v):
+        v = _require_non_empty(v, "code").lower()
+        if not COMPANY_CODE_REGEX.fullmatch(v):
+            raise ValueError("code: 2-50 letras minúsculas, números, guion o guion bajo")
+        return v
+
+    @validator("tax_id", "contact_email", "contact_phone")
+    def clean_optional(cls, v):
+        v = _normalize_text(v)
+        return v or None
+
+
+class CompanyCreate(CompanyBase):
+    pass
+
+
+class CompanyUpdate(BaseModel):
+    name: Optional[str] = None
+    tax_id: Optional[str] = None
+    contact_email: Optional[str] = None
+    contact_phone: Optional[str] = None
+    is_active: Optional[bool] = None
+
+    @validator("name", "tax_id", "contact_email", "contact_phone")
+    def clean_optional(cls, v):
+        v = _normalize_text(v)
+        return v or None
+
+
+class Company(CompanyBase):
+    id: int
+    created_at: Optional[datetime]
+
+    class Config:
+        orm_mode = True
+
+
+class DeviceAdminUpdate(BaseModel):
+    """Superadmin: asignar empresa. Admin de la empresa: solo el nombre."""
+    name: Optional[str] = None
+    company_id: Optional[int] = None
+    set_company: bool = False
+
+    @validator("name")
+    def normalize_name(cls, v):
+        v = _normalize_text(v)
+        return v or None
 
 
 # ============================================================

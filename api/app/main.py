@@ -15,14 +15,17 @@ from sqlalchemy import and_, select, text
 from sqlalchemy.orm import Session
 
 from . import auth
+from .tenancy import company_scope, device_in_scope
 from .audit import close_session, create_session, log_action, touch_session
 from .database import Base, SessionLocal, engine, get_db
 from .access_control.routes import router as access_control_router
 from .access_integration import router as access_integration_router
+from .companies import router as companies_router
 from .models import (
     AccessEvent,
     AuditLog,
     Command,
+    Company,
     Device,
     IntegrationAPIKey,
     Telemetry,
@@ -69,6 +72,9 @@ app.include_router(
     prefix="/api/integrations/access",
     tags=["integrations"],
 )
+
+# Empresas y asignación de equipos (multiempresa)
+app.include_router(companies_router)
 
 # ============================================================
 # CORS
@@ -207,26 +213,33 @@ def can_manage_user(current_user: User, target_user: User) -> bool:
 
     if current_user.role == "admin":
         return (
-            target_user.created_by_user_id == current_user.id
+            current_user.company_id is not None
+            and target_user.company_id == current_user.company_id
             and target_user.role == "user"
         )
 
     return False
 
 
-def get_visible_users_query(current_user: User):
+def get_visible_users_query(current_user: User, scope: Optional[int] = None):
     """
     Qué usuarios puede ver cada uno:
-    - superadmin: todos
-    - admin: solo los user creados por él
+    - superadmin: todos, o los de la empresa elegida
+    - admin: los user de su empresa
     """
     if is_superadmin(current_user):
-        return select(User).order_by(User.id)
+        query = select(User).order_by(User.id)
+        if scope is not None:
+            query = query.where(User.company_id == scope)
+        return query
 
     if current_user.role == "admin":
         return (
             select(User)
-            .where(User.created_by_user_id == current_user.id)
+            .where(
+                User.company_id == current_user.company_id,
+                User.role == "user",
+            )
             .order_by(User.id)
         )
 
@@ -769,34 +782,33 @@ def get_authenticated_user(
 def list_devices(
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_any_module),
+    scope: Optional[int] = Depends(company_scope),
 ):
     """
-    - superadmin/admin: ven todos
-    - user: solo los que tengan permiso de lectura
+    - superadmin: todos, o los de la empresa elegida
+    - admin: los de su empresa
+    - user: los de su empresa con permiso de lectura
     """
     mark_session_activity(db, current_user)
 
-    if is_admin_like(current_user):
-        devices = db.execute(
-            select(Device).order_by(Device.device_id)
-        ).scalars().all()
-    else:
-        devices = (
-            db.execute(
-                select(Device)
-                .join(
-                    UserDevicePermission,
-                    Device.device_id == UserDevicePermission.device_id,
-                )
-                .where(
-                    UserDevicePermission.user_id == current_user.id,
-                    UserDevicePermission.can_read.is_(True),
-                )
-                .order_by(Device.device_id)
+    query = select(Device).order_by(Device.device_id)
+    if scope is not None:
+        query = query.where(Device.company_id == scope)
+
+    if not is_admin_like(current_user):
+        query = (
+            query
+            .join(
+                UserDevicePermission,
+                Device.device_id == UserDevicePermission.device_id,
             )
-            .scalars()
-            .all()
+            .where(
+                UserDevicePermission.user_id == current_user.id,
+                UserDevicePermission.can_read.is_(True),
+            )
         )
+
+    devices = db.execute(query).scalars().all()
 
     enriched = []
     for d in devices:
@@ -814,6 +826,7 @@ def get_device(
     device_id: str,
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_any_module),
+    scope: Optional[int] = Depends(company_scope),
 ):
     mark_session_activity(db, current_user)
     device_id = validate_device_id(device_id)
@@ -822,7 +835,7 @@ def get_device(
         select(Device).where(Device.device_id == device_id)
     ).scalar_one_or_none()
 
-    if not device:
+    if not device_in_scope(device, scope):
         raise HTTPException(status_code=404, detail="Device not found")
 
     if not is_admin_like(current_user):
@@ -858,6 +871,7 @@ def get_telemetry(
     limit: int = Query(100, ge=1, le=1000),
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_module("monitoring")),
+    scope: Optional[int] = Depends(company_scope),
 ):
     mark_session_activity(db, current_user)
     device_id = validate_device_id(device_id)
@@ -866,7 +880,7 @@ def get_telemetry(
         select(Device).where(Device.device_id == device_id)
     ).scalar_one_or_none()
 
-    if not device:
+    if not device_in_scope(device, scope):
         raise HTTPException(status_code=404, detail="Device not found")
 
     if not is_admin_like(current_user):
@@ -919,9 +933,20 @@ def post_command(
     body: CommandCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.require_module("monitoring")),
+    scope: Optional[int] = Depends(company_scope),
 ):
     mark_session_activity(db, current_user)
     device_id = validate_device_id(device_id)
+
+    existing_device = db.execute(
+        select(Device).where(Device.device_id == device_id)
+    ).scalar_one_or_none()
+    # Fuera de su empresa el equipo "no existe". Solo el superadmin puede
+    # mandar comandos a un equipo que todavía no se registró.
+    if existing_device is not None and not device_in_scope(existing_device, scope):
+        raise HTTPException(status_code=404, detail="Device not found")
+    if existing_device is None and not is_superadmin(current_user):
+        raise HTTPException(status_code=404, detail="Device not found")
 
     if not is_admin_like(current_user):
         perm = (
@@ -954,7 +979,7 @@ def post_command(
     ).scalar_one_or_none()
 
     if not device:
-        device = Device(device_id=device_id, status="pending")
+        device = Device(device_id=device_id, status="pending", company_id=scope)
         db.add(device)
         db.commit()
         db.refresh(device)
@@ -992,11 +1017,25 @@ def create_user(
     request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.get_current_user),
+    scope: Optional[int] = Depends(company_scope),
 ):
     mark_session_activity(db, current_user)
     current_user = require_admin_like(current_user)
 
     requested_role = body.role or "user"
+
+    # Empresa del usuario nuevo: el superadmin la indica (o usa la elegida);
+    # un admin solo crea usuarios en su propia empresa.
+    if is_superadmin(current_user):
+        target_company_id = body.company_id if body.company_id is not None else scope
+        if requested_role == "superadmin":
+            target_company_id = None
+        elif target_company_id is None:
+            raise HTTPException(status_code=400, detail="Indicá la empresa del usuario")
+        elif not db.get(Company, target_company_id):
+            raise HTTPException(status_code=404, detail="Empresa no encontrada")
+    else:
+        target_company_id = current_user.company_id
 
     if not can_create_role(current_user, requested_role):
         log_action(
@@ -1037,6 +1076,7 @@ def create_user(
         username=body.username,
         hashed_password=auth.get_password_hash(body.password),
         role=requested_role,
+        company_id=target_company_id,
         created_by_user_id=current_user.id,
         is_active=body.is_active if body.is_active is not None else True,
         can_access_control=body.can_access_control,
@@ -1120,8 +1160,21 @@ def upsert_permission(
         select(Device).where(Device.device_id == body.device_id)
     ).scalar_one_or_none()
 
+    if device is None and not is_superadmin(current_user):
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    if device is not None and device.company_id != user.company_id:
+        raise HTTPException(
+            status_code=400,
+            detail="El dispositivo no pertenece a la empresa del usuario",
+        )
+
     if not device:
-        device = Device(device_id=body.device_id, status="pending")
+        device = Device(
+            device_id=body.device_id,
+            status="pending",
+            company_id=user.company_id,
+        )
         db.add(device)
         db.commit()
         db.refresh(device)
@@ -1219,11 +1272,12 @@ def update_module_access(
 def list_users(
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.get_current_user),
+    scope: Optional[int] = Depends(company_scope),
 ):
     mark_session_activity(db, current_user)
     current_user = require_admin_like(current_user)
 
-    users = db.execute(get_visible_users_query(current_user)).scalars().all()
+    users = db.execute(get_visible_users_query(current_user, scope)).scalars().all()
     return users
 
 
@@ -1594,11 +1648,14 @@ def get_audit_logs(
     channel_identifier: Optional[str] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.get_current_user),
+    scope: Optional[int] = Depends(company_scope),
 ):
     mark_session_activity(db, current_user)
     current_user = require_admin_like(current_user)
 
     query = select(AuditLog)
+    if scope is not None:
+        query = query.where(AuditLog.company_id == scope)
 
     if user:
         query = query.where(AuditLog.username == user)
@@ -1635,6 +1692,7 @@ def get_access_events(
    limit: int = Query(200, ge=1, le=1000),
    db: Session = Depends(get_db),
    current_user: User = Depends(auth.require_module("access_control")),
+   scope: Optional[int] = Depends(company_scope),
 ):
    """
    Lista eventos de control de acceso.
@@ -1646,6 +1704,8 @@ def get_access_events(
    mark_session_activity(db, current_user)
 
    query = select(AccessEvent)
+   if scope is not None:
+       query = query.where(AccessEvent.company_id == scope)
 
    # ----------------------------
    # Filtro por permisos
@@ -1720,12 +1780,19 @@ def get_mqtt_events(
     limit: int = Query(200, ge=1, le=5000),
     db: Session = Depends(get_db),
     current_user: User = Depends(auth.get_current_user),
+    scope: Optional[int] = Depends(company_scope),
 ):
     mark_session_activity(db, current_user)
     current_user = require_admin_like(current_user)
 
     conditions = []
     params = {}
+
+    if scope is not None:
+        conditions.append(
+            "device_id IN (SELECT device_id FROM devices WHERE company_id = :company_id)"
+        )
+        params["company_id"] = scope
 
     if device_id:
         device_id = validate_device_id(device_id)

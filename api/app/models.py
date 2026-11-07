@@ -18,6 +18,22 @@ from .database import Base
 
 
 # ============================================================
+# COMPANY (empresa / cliente)
+# ============================================================
+class Company(Base):
+    __tablename__ = "companies"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(150), unique=True, nullable=False)
+    code = Column(String(50), unique=True, nullable=False)
+    tax_id = Column(String(30), nullable=True)
+    contact_email = Column(String(150), nullable=True)
+    contact_phone = Column(String(50), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ============================================================
 # DEVICE
 # ============================================================
 class Device(Base):
@@ -26,6 +42,8 @@ class Device(Base):
     id = Column(Integer, primary_key=True, index=True)
     device_id = Column(String(120), unique=True, index=True, nullable=False)
     name = Column(String(255), nullable=True)
+    # NULL = equipo sin asignar (llegó por MQTT); solo lo ve el superadmin.
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
     status = Column(String(50), default="offline")
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -125,6 +143,9 @@ class User(Base):
 
     role = Column(String(50), default="user", index=True)
 
+    # NULL solo para superadmin (ve todas las empresas).
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
+
     # Permisos de entrada a módulos. Los permisos por dispositivo siguen
     # representados por UserDevicePermission.
     can_access_control = Column(Boolean, default=False, nullable=False)
@@ -142,6 +163,11 @@ class User(Base):
     )
 
     creator = relationship("User", remote_side=[id], backref="created_users")
+    company = relationship("Company")
+
+    @property
+    def company_name(self):
+        return self.company.name if self.company else None
 
     channels = relationship(
         "UserChannel",
@@ -248,6 +274,8 @@ class AuditLog(Base):
 
     user_id = Column(Integer, nullable=True, index=True)
     username = Column(String(120), nullable=True)
+    # Si no se indica, un trigger la toma del usuario o del dispositivo.
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
 
     action_type = Column(String(100), index=True)
     device_id = Column(String(120), nullable=True, index=True)
@@ -284,6 +312,8 @@ class AccessEvent(Base):
    id = Column(Integer, primary_key=True, index=True)
 
    device_id = Column(String(255), nullable=True, index=True)
+   # Si no se indica, un trigger la toma del dispositivo al insertar.
+   company_id = Column(Integer, ForeignKey("companies.id"), nullable=True, index=True)
    reader = Column(String(50), nullable=True, index=True)
    event_type = Column(String(50), nullable=True, index=True)
 

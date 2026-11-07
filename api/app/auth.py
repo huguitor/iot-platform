@@ -59,6 +59,9 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
     if not user.is_active:
         return None
 
+    if company_disabled(user):
+        return None
+
     if not verify_password(password, user.hashed_password):
         return None
 
@@ -124,7 +127,23 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    if company_disabled(user):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Empresa deshabilitada",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
     return user
+
+
+def company_disabled(user: User) -> bool:
+    """Usuarios de una empresa deshabilitada no entran (el superadmin no tiene empresa)."""
+    return (
+        user.role != "superadmin"
+        and user.company is not None
+        and not user.company.is_active
+    )
 
 
 # ============================================================
@@ -135,6 +154,15 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin privileges required",
+        )
+    return current_user
+
+
+def require_superadmin(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role != "superadmin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Superadmin privileges required",
         )
     return current_user
 
@@ -214,10 +242,12 @@ def ensure_admin_user(db: Session):
     if existing:
         return existing
 
+    # En una instalación nueva no hay empresas: el usuario inicial es superadmin
+    # (sin empresa) y desde ahí se crean las empresas y sus administradores.
     admin_user = User(
         username=ADMIN_USER,
         hashed_password=get_password_hash(ADMIN_PASSWORD),
-        role="admin",
+        role="superadmin",
         is_active=True,
         can_access_control=True,
         can_access_monitoring=True,

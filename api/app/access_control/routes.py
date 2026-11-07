@@ -11,8 +11,14 @@ from ..models import User
 
 from . import schemas, service
 
+# Módulo heredado: no separa datos por empresa (multiempresa). Desde 2026-11-07
+# queda solo para el superadmin; personas y tarjetas viven en la app Control de
+# Acceso. Ver docs/multiempresa-plataforma.md.
 router = APIRouter(
-    dependencies=[Depends(auth.require_module("access_control"))],
+    dependencies=[
+        Depends(auth.require_module("access_control")),
+        Depends(auth.require_superadmin),
+    ],
 )
 
 
