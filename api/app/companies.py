@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 from . import auth
 from .audit import log_action
 from .database import get_db
-from .models import Company, Device, User, UserDevicePermission
+from .models import Company, Device, User
+from .provisioning import set_device_company
 from .schemas import (
     Company as CompanySchema,
     CompanyCreate,
@@ -122,7 +123,9 @@ def update_device(
     """
     - superadmin: asigna o cambia la empresa (set_company=true) y el nombre.
     - admin: solo cambia el nombre de equipos de su empresa.
-    Al cambiar de empresa se borran los permisos de usuarios de la empresa anterior.
+    Al cambiar de empresa se borran los permisos de usuarios de la empresa anterior,
+    la empresa nueva ve historial solo desde ahora (`company_since`) y el código
+    de reclamo del QR deja de servir.
     """
     if current_user.role not in {"superadmin", "admin"}:
         raise HTTPException(status_code=403, detail="Admin privileges required")
@@ -136,18 +139,14 @@ def update_device(
         _require_superadmin(current_user)
         if body.company_id is not None and not db.get(Company, body.company_id):
             raise HTTPException(status_code=404, detail="Empresa no encontrada")
-        device.company_id = body.company_id
+
+    removed_permissions = 0
+    if body.set_company:
+        # Marca desde cuándo la empresa ve datos e invalida el código del QR.
+        removed_permissions = set_device_company(db, device, body.company_id)
 
     if "name" in body.__fields_set__:
         device.name = body.name
-
-    removed_permissions = 0
-    if body.set_company and previous_company != device.company_id:
-        removed_permissions = (
-            db.query(UserDevicePermission)
-            .filter(UserDevicePermission.device_id == device.device_id)
-            .delete(synchronize_session=False)
-        )
 
     db.commit()
     db.refresh(device)

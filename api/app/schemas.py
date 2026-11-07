@@ -79,6 +79,11 @@ class Device(DeviceBase):
     card_capacity: Optional[int] = None
     info_at: Optional[datetime] = None
 
+    model: Optional[str] = None
+    provisioned_at: Optional[datetime] = None
+    company_since: Optional[datetime] = None
+    mqtt_enabled: Optional[bool] = None
+
     class Config:
         orm_mode = True
 
@@ -423,3 +428,61 @@ class AccessEvent(BaseModel):
 
    class Config:
        orm_mode = True
+
+
+# ============================================================
+# ALTA AUTOMÁTICA DE EQUIPOS
+# ============================================================
+# ID = prefijo del modelo + chip ID del ESP (8 hex en minúsculas).
+FACTORY_DEVICE_ID_REGEX = re.compile(r"^(ius|gw)-[0-9a-f]{8}$")
+FACTORY_MODELS = {"ius": "ius-device", "gw": "gateway-wiegand"}
+
+
+class FactoryDeviceCreate(BaseModel):
+    device_id: str
+    name: Optional[str] = None
+
+    @validator("device_id")
+    def validate_factory_id(cls, v):
+        v = (v or "").strip()
+        if not FACTORY_DEVICE_ID_REGEX.fullmatch(v):
+            raise ValueError("device_id debe ser ius-<8 hex> o gw-<8 hex> en minúsculas")
+        return v
+
+    @validator("name")
+    def normalize_name(cls, v):
+        v = _normalize_text(v)
+        return v or None
+
+
+class FactoryDeviceCreated(BaseModel):
+    """Se devuelve UNA sola vez: ni el secreto ni el código quedan guardados en claro."""
+    device_id: str
+    model: str
+    mqtt_username: str
+    mqtt_password: str
+    claim_code: str
+    claim_url: str
+
+
+class DeviceClaim(BaseModel):
+    device_id: str
+    claim_code: str
+
+    @validator("device_id")
+    def normalize_device_id(cls, v):
+        return (v or "").strip().lower()[:120]
+
+    @validator("claim_code")
+    def normalize_code(cls, v):
+        return re.sub(r"[^0-9A-Za-z]", "", v or "").upper()[:64]
+
+
+class DeviceClaimCode(BaseModel):
+    device_id: str
+    claim_code: str
+    claim_url: str
+
+
+class DeviceMqttUpdate(BaseModel):
+    enabled: bool

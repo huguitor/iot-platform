@@ -21,6 +21,7 @@ from .database import Base, SessionLocal, engine, get_db
 from .access_control.routes import router as access_control_router
 from .access_integration import router as access_integration_router
 from .companies import router as companies_router
+from .provisioning import router as provisioning_router
 from .models import (
     AccessEvent,
     AuditLog,
@@ -75,6 +76,7 @@ app.include_router(
 
 # Empresas y asignación de equipos (multiempresa)
 app.include_router(companies_router)
+app.include_router(provisioning_router)
 
 # ============================================================
 # CORS
@@ -902,6 +904,10 @@ def get_telemetry(
             )
 
     conditions = [Telemetry.device_id == device_id]
+
+    # La empresa ve historial solo desde que el equipo es suyo (reclamo o asignación).
+    if scope is not None and device.company_since is not None:
+        conditions.append(Telemetry.timestamp >= device.company_since)
 
     if start is not None:
         conditions.append(
@@ -1789,8 +1795,11 @@ def get_mqtt_events(
     params = {}
 
     if scope is not None:
+        # Solo equipos de la empresa y solo desde que son suyos (company_since).
         conditions.append(
-            "device_id IN (SELECT device_id FROM devices WHERE company_id = :company_id)"
+            "EXISTS (SELECT 1 FROM devices d WHERE d.device_id = mqtt_events.device_id"
+            " AND d.company_id = :company_id"
+            " AND (d.company_since IS NULL OR mqtt_events.created_at >= d.company_since))"
         )
         params["company_id"] = scope
 

@@ -1,6 +1,6 @@
 # Plan: alta automática de equipos y reclamo por QR
 
-- **Estado:** propuesta aprobada en lo principal (§9), sin implementar. Nada de esto está en producción.
+- **Estado:** etapas 0 (en producción), 1 y 2 (probadas en aislado, rama `feature/alta-equipos`) hechas. Etapas 3 a 6 pendientes. El alta automática **no** está en producción.
 - **Fecha:** 2026-11-06, por Claude (sesión en el VPS), a pedido de Hugo.
 - **Alcance:** broker MQTT público (8883), API y dashboard de iot-platform,
   firmware de los equipos (primero `esp12_serial_ius`), herramienta de "fábrica".
@@ -91,7 +91,42 @@ a la API acceso de escritura a secretos de root y control sobre el contenedor.
 - si los roles aceptan `%u` en los topics (un solo rol para todos) o hace falta
   un rol por equipo (igual es automático).
 
+**Resultado de la etapa 1 (2026-11-07, Mosquitto 2.1.2, prueba aislada
+`mosquitto/tests/test_dynsec_isolated.sh`: 37 OK, 0 fallas):**
+
+| Punto | Resultado |
+|---|---|
+| Convivencia con el `passwordfile` público en 8883 | **Sí**, con una condición: `plugin_load dynsec` tiene que ir **antes** que `plugin_load public_passwords` en el archivo. El orden de `plugin_use` no importa. Con el passwordfile cargado primero, los equipos de dynsec quedan rechazados (CONNACK 5) y los del passwordfile siguen bien. |
+| Cuenta de administración | Usuario `api-admin` en el **passwordfile interno** con `topic readwrite $CONTROL/dynamic-security/#` en la ACL interna, conectado por **1883** (red Docker interna). Funciona **sin** `plugin_use dynsec` en 1883 y sin listener extra. `api-admin` no entra por 8883. |
+| Rol con `%u` | **Sí**: un solo rol `device` con `iot/devices/%u/#` (publishClientSend, publishClientReceive, subscribePattern, unsubscribePattern). Cada equipo publica y recibe solo lo suyo. |
+
+Hallazgos que el despliegue (etapa 5) tiene que respetar:
+
+1. **Borrar la cuenta inicial de dynsec** (la que crea `mosquitto_ctrl dynsec
+   init`): mientras exista, administra el broker **desde el 8883 público**.
+   Borrada, `api-admin` sigue administrando.
+2. **`setDefaultACLAccess publishClientReceive deny`**. Por defecto dynsec deja
+   recibir todo y el plugin de ACL de archivo no filtra suscripciones: sin este
+   cambio un equipo dynsec **recibe el `cmd` de otro** si se suscribe a su topic.
+3. **Mismo nombre en los dos mecanismos:** si se crea en dynsec un usuario que ya
+   está en el passwordfile, manda dynsec (la clave vieja deja de servir). Sirve
+   para migrar en la etapa 6; la API tiene que rechazar IDs que ya estén en el
+   passwordfile (hoy `lab-esp8266-dell-01`; los `ius-`/`gw-` no chocan).
+4. `disableClient` corta la conexión activa en el momento; cambiar la clave o
+   borrar el usuario no requiere reiniciar. Usuarios, rol y defaults persisten al
+   reiniciar el broker en `dynamic-security.json` (claves con hash, no en texto plano).
+5. El client id sigue siendo el usuario (`use_username_as_clientid`).
+6. Con o sin una línea `pattern` en `acl-public` el resultado es el mismo (no se
+   pudo leer el archivo real: es de root).
+
 ### 3.4 Plataforma (API y base de datos)
+
+> **Implementado en la etapa 2** con dos cambios respecto de esta propuesta:
+> `claimed_at`/`claimed_by` quedó como `company_since` (se marca en reclamo,
+> asignación manual y movida; quién lo hizo va a la auditoría), y las rutas de
+> superadmin son `POST /api/admin/devices/{id}/release`,
+> `PUT /api/admin/devices/{id}/mqtt` y la asignación ya existente
+> `PUT /api/admin/devices/{id}`. Detalle en [alta-automatica-equipos.md](alta-automatica-equipos.md).
 
 Datos nuevos por equipo (en `devices` o en una tabla aparte):
 
@@ -160,8 +195,8 @@ Cambios en `esp12_serial_ius` (sería la 1.3.0) y luego en el gateway:
 | # | Etapa | Resultado esperado | Quién |
 |---|---|---|---|
 | 0 | Ordenar `/srv/iot-platform`: llevar a `master` solo la parte de empresas (`company_id`, `tenancy`) | multiempresa de equipos versionada y desplegable. **2026-11-07: rama `feature/empresas-equipos` probada en aislado; ver [multiempresa-plataforma.md](multiempresa-plataforma.md)** | Claude + Hugo (ya pendiente en T-20261105-03) |
-| 1 | Prueba aislada del broker con Dynamic Security (contenedor descartable, sin red pública, como `docs/test-mqtt-tls.py`) | se confirman los tres puntos de §3.3 | Claude |
-| 2 | API: campos, endpoints y cliente de Dynamic Security, con pruebas | alta, reclamo, asignación, liberación y baja probadas con broker de prueba | Claude |
+| 1 | Prueba aislada del broker con Dynamic Security (contenedor descartable, sin red pública, como `docs/test-mqtt-tls.py`) | se confirman los tres puntos de §3.3. **2026-11-07: hecha, 37/37; ver resultado en §3.3** | Claude |
+| 2 | API: campos, endpoints y cliente de Dynamic Security, con pruebas | alta, reclamo, asignación, liberación y baja probadas con broker de prueba. **2026-11-07: hecha en `feature/alta-equipos`, ver [alta-automatica-equipos.md](alta-automatica-equipos.md)** | Claude |
 | 3 | Firmware 1.3.0 + herramienta de fábrica | ESP-12 fabricado de punta a punta contra el entorno de prueba | Claude + Hugo (USB) |
 | 4 | Dashboard: agregar equipo, sin empresa, etiqueta | reclamo por QR desde el celular | Claude |
 | 5 | Producción: habilitar Dynamic Security en 8883 junto al `passwordfile` actual | equipos nuevos se dan de alta solos; el laboratorio sigue conectado | Hugo corre los pasos de root; Claude verifica |

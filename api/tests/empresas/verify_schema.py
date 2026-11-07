@@ -12,7 +12,7 @@ checks = {
  "access_tables_intactas": q("select count(*) from information_schema.columns where table_name like 'access\\_%' and table_name <> 'access_events' and column_name='company_id'"),
 }
 for k, v in checks.items(): print(k, v)
-assert checks["alembic"] == [("20261107_01",)]
+assert checks["alembic"] == [(os.environ.get("EXPECTED_ALEMBIC", "20261107_01"),)]
 assert len(checks["companies"]) == 1 and checks["companies"][0][2] == "panozo"
 assert checks["devices_sin_empresa"] == [(0,)]
 assert ("superadmin", True, 1) in checks["users"] and ("admin", False, 2) in checks["users"] and ("user", False, 4) in checks["users"]

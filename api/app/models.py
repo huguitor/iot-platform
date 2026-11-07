@@ -84,6 +84,15 @@ class Device(Base):
     last_door_sensor_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
     # ============================================================
+    # ALTA AUTOMÁTICA (fábrica + reclamo por QR)
+    # ============================================================
+    model = Column(String(50), nullable=True)
+    provisioned_at = Column(DateTime(timezone=True), nullable=True)  # NULL = equipo viejo, usuario MQTT a mano
+    claim_code_hash = Column(String(255), nullable=True)  # NULL = sin código vigente
+    company_since = Column(DateTime(timezone=True), nullable=True)  # la empresa ve datos desde acá
+    mqtt_enabled = Column(Boolean, nullable=True)  # solo equipos de fábrica (Dynamic Security)
+
+    # ============================================================
     # RELACIONES
     # ============================================================
     telemetry = relationship("Telemetry", back_populates="device")
